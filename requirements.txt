@@ -1,0 +1,9 @@
+numpy==1.26
+pandas
+scikit-learn
+matplotlib
+notebook
+ipykernel
+ipython
+river
+mock
