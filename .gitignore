@@ -1,0 +1,3 @@
+__pycache*
+testing/test_logs/*
+/experiments/
