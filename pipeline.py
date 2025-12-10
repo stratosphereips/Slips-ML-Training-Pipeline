@@ -1,8 +1,5 @@
 # pipeline_ml_training/runner.py
 """
-PipelineRunner — minimal, conservative, and readable.
-
-Features added:
  - saves effective config into experiment folder BEFORE running
  - supports loading preprocessing steps and classifier from config
    (preprocessing.load_from, model.load_from + model.load_name)
