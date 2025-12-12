@@ -2,8 +2,8 @@ import pytest
 import tempfile
 import numpy as np
 from pathlib import Path
-from pipeline_ml_training.logger import Logger
-from pipeline_ml_training.commons import BENIGN, MALICIOUS, BACKGROUND
+from src.logger import Logger
+from src.commons import BENIGN, MALICIOUS, BACKGROUND
 
 
 class TestLogger:

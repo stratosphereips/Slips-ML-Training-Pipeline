@@ -11,8 +11,8 @@ import pandas as pd
 import traceback
 from typing import Iterable, List, Optional, Tuple, Union
 
-from pipeline_ml_training.conn_normalizer import ConnToSlipsConverter
-from pipeline_ml_training.commons import BENIGN, MALICIOUS
+from .conn_normalizer import ConnToSlipsConverter
+from .commons import BENIGN, MALICIOUS
 
 
 class FeatureExtraction:

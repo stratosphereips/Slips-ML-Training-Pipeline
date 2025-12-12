@@ -2,12 +2,12 @@ import pytest
 import re
 import tempfile
 from pathlib import Path
-from pipeline_ml_training.dataset_wrapper import (
+from src.dataset_wrapper import (
     ZeekDataset,
     find_and_load_datasets,
     sample_n_from_each_dataset,
 )
-from pipeline_ml_training.commons import BENIGN, MALICIOUS, BACKGROUND
+from src.commons import BENIGN, MALICIOUS, BACKGROUND
 
 
 class TestZeekDataset:

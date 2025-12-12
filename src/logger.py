@@ -1,4 +1,4 @@
-from pipeline_ml_training.commons import BENIGN, MALICIOUS, BACKGROUND
+from .commons import BENIGN, MALICIOUS, BACKGROUND
 import numpy
 import os
 

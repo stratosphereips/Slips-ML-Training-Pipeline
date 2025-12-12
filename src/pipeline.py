@@ -17,18 +17,18 @@ import sys
 
 import numpy as np
 
-from pipeline_ml_training.config_reader import ConfigReader
-from pipeline_ml_training.minimal_mapper import (
+from .conf_reader import ConfigReader
+from .class_factory import (
     get_transformer_class,
     get_classifier_class,
     prepare_river_nested_model_params,
     get_wrapper_class,
     get_mixer_class,
 )
-from pipeline_ml_training.dataset_wrapper import find_and_load_datasets
-from pipeline_ml_training.features import FeatureExtraction
-from pipeline_ml_training.preprocessing_wrapper import PreprocessingWrapper
-from pipeline_ml_training.logger import Logger
+from .dataset_wrapper import find_and_load_datasets
+from .features import FeatureExtraction
+from .preprocessing_wrapper import PreprocessingWrapper
+from .logger import Logger
 
 
 class PipelineRunner:

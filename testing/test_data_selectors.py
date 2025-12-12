@@ -2,7 +2,7 @@ import pytest
 import numpy as np
 import pandas as pd
 from unittest import mock
-from pipeline_ml_training.mixers import (
+from src.data_selectors import (
     SequenceMixer,
     RandomBatchesMixer,
     BalancedByLabelMixer,

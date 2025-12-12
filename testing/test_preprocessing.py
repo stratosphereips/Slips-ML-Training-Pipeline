@@ -3,7 +3,7 @@ import tempfile
 import numpy as np
 from pathlib import Path
 from unittest.mock import Mock
-from pipeline_ml_training.preprocessing_wrapper import PreprocessingWrapper
+from src.preprocessing_wrapper import PreprocessingWrapper
 
 
 class DummyTransformer:
