@@ -258,9 +258,12 @@ class TestSequenceMixer:
         assert train is not None
         assert val is not None
         total = batch_len(train) + batch_len(val)
+        # should operate on the single underlying batch
         assert total == batch_len(sample_batches_list[0])
-        val_ratio = batch_len(val) / total
-        assert 0.2 <= val_ratio <= 0.4  # Around 30%
+        # expected validation count uses rounding as SequenceMixer._split_batch does
+        expected_val = int(round(0.3 * total))
+        assert batch_len(val) == expected_val
+
     
     def test_sequence_no_validation_split(self, sample_batches_list, rng):
         """Test SequenceMixer without validation split."""

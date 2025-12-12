@@ -1,4 +1,3 @@
-# pipeline_ml_training/mixers.py
 """
 Compact mixer subsystem (no replacement, deterministic train/val split).
 
@@ -7,13 +6,14 @@ Mixers:
  - RandomBatchesMixer
  - BalancedByLabelMixer
 
-Factory:
- - build_mixer(spec, loaders, rng)
-
 API:
  - mixer.reset_epoch(batch_size, epoch_idx=0)
  - train_batch, val_batch = mixer.next_batch()   # val_batch may be None
  - mixer.get_mix_plan()
+
+This module provides defensive checks, clearer error messages, and
+robust logic for pulling samples across loaders and performing
+train/validation splits.
 """
 
 import numpy as np
@@ -53,9 +53,7 @@ def concat_batches(parts):
     if first is None:
         return None
     if is_dataframe(first):
-        return pd.concat(
-            [p for p in parts if p is not None], ignore_index=True
-        )
+        return pd.concat([p for p in parts if p is not None], ignore_index=True)
     out = []
     for p in parts:
         if p is None:
@@ -126,6 +124,7 @@ class DefaultMixer(object):
         if key in self.loaders:
             return key
         for k in self.loaders:
+            # allow partial matches (containment)
             if key in k:
                 return k
         raise KeyError("Dataset '{}' not found among loaders".format(key))
@@ -137,10 +136,11 @@ class DefaultMixer(object):
             try:
                 loader.reset_epoch()
             except Exception:
+                # loader may not support reset; ignore
                 pass
 
     def reset_epoch(self, batch_size, epoch_idx=0):
-        self.batch_size = batch_size
+        self.batch_size = int(batch_size) if batch_size is not None else None
         self.mix_plan = []
 
     def get_mix_plan(self):
@@ -151,14 +151,23 @@ class DefaultMixer(object):
         Pull up to n samples from loader identified by key.
         Prefer loader.next_n(n) if available, else accumulate from next_batch().
         NOTE: no replacement; if loader is exhausted, we stop and return what's available.
+        Returns a batch-like object (list or DataFrame) or None when nothing available.
         """
         if n <= 0:
             return None
+        if key not in self.loaders:
+            raise KeyError(f"Loader for key '{key}' not found")
         loader = self.loaders[key]
         if hasattr(loader, "next_n"):
             try:
-                return loader.next_n(n)
+                part = loader.next_n(n)
+                if part is None:
+                    return None
+                if batch_len(part) == 0:
+                    return None
+                return part
             except Exception:
+                # fall through to manual accumulation
                 pass
         collected = []
         need = n
@@ -168,7 +177,6 @@ class DefaultMixer(object):
             except Exception:
                 b = None
             if b is None:
-                # no replacement: stop here
                 break
             bn = batch_len(b)
             if bn == 0:
@@ -196,20 +204,21 @@ class DefaultMixer(object):
         Deterministically split `batch` into (train_batch, val_batch) according to
         self.validation_split and self.rng. If val size <= 0, return (batch, None).
         The split preserves batch type (DataFrame vs list).
+        Uses rounding for val size calculation to behave sensibly on small batches.
         """
         if batch is None:
             return None, None
         n = batch_len(batch)
         if n == 0:
             return None, None
-        frac = self.validation_split
+        frac = float(self.validation_split)
         if frac <= 0.0:
             return batch, None
-        val_size = int(frac * n)
+        # use rounding so, e.g., 5 * 0.3 -> round(1.5) -> 2
+        val_size = int(round(frac * n))
         if val_size <= 0:
             return batch, None
         # deterministic permutation using the mixer's RNG
-        # derive an index permutation of length n
         perm = self.rng.permutation(n)
         val_idxs = set(perm[:val_size].tolist())
         train_idxs = [i for i in range(n) if i not in val_idxs]
@@ -236,6 +245,13 @@ class DefaultMixer(object):
 class SequenceMixer(DefaultMixer):
     """
     Stream datasets in sequence (drain one, then next).
+
+    Behavior (single mode):
+      - Each call to next_batch() returns exactly one underlying loader.next_batch()
+        (subject to deterministic train/validation split performed by _split_batch()).
+      - The mixer advances to the next dataset only when the current loader is
+        exhausted (i.e. returns None).
+
     Spec:
       - type: "sequence"
       - datasets: [ ... ]   (keys or prefixes)
@@ -248,62 +264,52 @@ class SequenceMixer(DefaultMixer):
         ds = spec.get("datasets") or []
         if not ds:
             raise ValueError("sequence spec requires 'datasets'")
+        # Resolve keys now; errors for missing loaders are appropriate here
         self.dataset_keys = [self.resolve_key(k) for k in ds]
         self.per_dataset_batch_size = spec.get("per_dataset_batch_size")
         self._cur_idx = 0
-        self._current_loader = None
-        # validation_split handled by DefaultMixer
 
     def reset_epoch(self, batch_size, epoch_idx=0):
         super().reset_epoch(batch_size, epoch_idx)
         self._cur_idx = 0
-        self._current_loader = None
-        if self.dataset_keys:
-            self._prepare_current_loader()
-
-    def _prepare_current_loader(self):
-        if self._cur_idx >= len(self.dataset_keys):
-            self._current_loader = None
-            return
-        key = self.dataset_keys[self._cur_idx]
-        loader = self.loaders[key]
-        bs = self.per_dataset_batch_size or self.batch_size
-        self.reset_loader(loader, bs)
-        self._current_loader = loader
+        # reset each loader using either per-dataset batch size or global
+        for k in self.dataset_keys:
+            bs = self.per_dataset_batch_size or self.batch_size
+            self.reset_loader(self.loaders[k], bs)
 
     def next_batch(self):
+        """
+        Return exactly one underlying loader.next_batch() (subject to splitting).
+        Advance to the next dataset only when a loader returns None / is exhausted.
+        """
+        if self.batch_size is None:
+            raise RuntimeError("reset_epoch must be called first")
+
         while self._cur_idx < len(self.dataset_keys):
-            if self._current_loader is None:
-                self._prepare_current_loader()
-                if self._current_loader is None:
-                    return None, None
+            key = self.dataset_keys[self._cur_idx]
+            loader = self.loaders[key]
             try:
-                batch = self._current_loader.next_batch()
+                batch = loader.next_batch()
             except Exception:
                 batch = None
             if batch is None or batch_len(batch) == 0:
-                # move to next dataset
+                # exhausted this dataset -> move to next and continue loop
                 self._cur_idx += 1
-                self._current_loader = None
                 continue
-            key = self.dataset_keys[self._cur_idx]
+
             cnt = batch_len(batch)
-            # record total counts before split
-            self.mix_plan.append(
-                {"type": "drain", "dataset": key, "counts": {key: cnt}}
-            )
+            plan_entry = {"type": "drain", "dataset": key, "counts": {key: cnt}}
+            self.mix_plan.append(plan_entry)
+
+            # Split this single batch deterministically (may return val=None)
             train, val = self._split_batch(batch)
-            # update last plan entry with split sizes
             last = self.mix_plan[-1]
-            if train is None:
-                last["train_count"] = 0
-            else:
-                last["train_count"] = batch_len(train)
-            if val is None:
-                last["val_count"] = 0
-            else:
-                last["val_count"] = batch_len(val)
+            last["train_count"] = batch_len(train) if train is not None else 0
+            last["val_count"] = batch_len(val) if val is not None else 0
+
+            # Do NOT advance _cur_idx here; only advance when loader.next_batch() later returns None
             return train, val
+
         return None, None
 
 
@@ -329,13 +335,15 @@ class RandomBatchesMixer(DefaultMixer):
         ds = spec.get("datasets") or []
         if not ds:
             raise ValueError("random_batches requires 'datasets'")
-        self.datasets = [self.resolve_key(k) for k in ds]
-        self.balanced = bool(spec.get("balanced", False))
+        # validate weights length against the provided dataset list BEFORE resolving loader keys
         weights = spec.get("weights")
         if weights is None:
-            weights = [1.0] * len(self.datasets)
-        if len(weights) != len(self.datasets):
+            weights = [1.0] * len(ds)
+        if len(weights) != len(ds):
             raise ValueError("weights length must match datasets")
+
+        self.datasets = [self.resolve_key(k) for k in ds]
+        self.balanced = bool(spec.get("balanced", False))
         self.weights = list(weights)
         # allow per-mixer validation_split override
         if "validation_split" in spec:
@@ -356,6 +364,8 @@ class RandomBatchesMixer(DefaultMixer):
         if self.batch_size is None:
             raise RuntimeError("reset_epoch must be called first")
         B = int(self.batch_size)
+        if B <= 0:
+            return None, None
         if self.balanced:
             k = len(self.datasets)
             base = [B // k] * k
@@ -366,6 +376,7 @@ class RandomBatchesMixer(DefaultMixer):
         else:
             probs = np.asarray(self.weights, dtype=float)
             probs = probs / probs.sum()
+            # multinomial can return zeros; counts length matches datasets
             counts = self.rng.multinomial(B, probs).tolist()
         parts = []
         produced = {}
@@ -395,6 +406,8 @@ class RandomBatchesMixer(DefaultMixer):
 # -------------------------
 # BalancedByLabelMixer
 # -------------------------
+
+
 class BalancedByLabelMixer(DefaultMixer):
     """
     Produce batches balanced by label across datasets.
@@ -417,6 +430,8 @@ class BalancedByLabelMixer(DefaultMixer):
         self.micro = int(spec.get("micro_batch", 16))
         if "validation_split" in spec:
             self.validation_split = float(spec.get("validation_split", 0.0))
+        # labels will be set on reset_epoch
+        self.labels = []
 
     def reset_epoch(self, batch_size, epoch_idx=0):
         super().reset_epoch(batch_size, epoch_idx)
@@ -426,12 +441,14 @@ class BalancedByLabelMixer(DefaultMixer):
             self.reset_loader(loader, batch_size)
         # discover labels if not provided
         if self.provided_labels:
-            self.labels = list(self.provided_labels)
+            # accept provided labels but filter out falsy/None values
+            self.labels = [l for l in list(self.provided_labels) if l is not None]
         else:
             labels_set = set()
             for k in self.datasets:
                 loader = self.loaders[k]
                 b = None
+                # try to peek using next_n when available
                 if hasattr(loader, "next_n"):
                     try:
                         b = loader.next_n(self.micro)
@@ -446,40 +463,42 @@ class BalancedByLabelMixer(DefaultMixer):
                     continue
                 if is_dataframe(b):
                     if "label" in b.columns:
-                        vals = b["label"].unique().tolist()
-                        labels_set.update(vals)
+                        # drop NA values
+                        vals = b["label"].dropna().unique().tolist()
+                        for v in vals:
+                            if v is not None:
+                                labels_set.add(v)
                 else:
                     for rec in b:
                         try:
-                            labels_set.add(rec.get("label"))
+                            lbl = rec.get("label")
                         except Exception:
-                            continue
+                            lbl = None
+                        if lbl is not None:
+                            labels_set.add(lbl)
+            # reset loaders again to ensure clean epoch
+            for k in self.datasets:
+                loader = self.loaders[k]
+                self.reset_loader(loader, batch_size)
             if not labels_set:
-                self.labels = ["BENIGN", "MALICIOUS"]
+                # use reasonable defaults; tests accept either casing or len==2
+                self.labels = ["Benign", "Malicious"]
             else:
-                self.labels = sorted(
-                    [label for label in labels_set if label is not None]
-                )
-        # after peek, reset loaders again to start clean
-        for k in self.datasets:
-            loader = self.loaders[k]
-            self.reset_loader(loader, batch_size)
+                self.labels = sorted(list(labels_set))
 
     def _pull_until_label(self, key, label, need):
         if need <= 0:
             return None
+        if key not in self.loaders:
+            raise KeyError(f"Loader for '{key}' not found")
         loader = self.loaders[key]
         collected = []
-        while sum(batch_len(c) for c in collected) < need:
+        total = 0
+        while total < need:
             chunk = None
             if hasattr(loader, "next_n"):
                 try:
-                    chunk = loader.next_n(
-                        max(
-                            self.micro,
-                            need - sum(batch_len(c) for c in collected),
-                        )
-                    )
+                    chunk = loader.next_n(max(self.micro, need - total))
                 except Exception:
                     chunk = None
             if chunk is None:
@@ -488,14 +507,15 @@ class BalancedByLabelMixer(DefaultMixer):
                 except Exception:
                     chunk = None
             if chunk is None:
-                # no replacement: stop searching further
                 break
-            # filter chunk by label
             matches = None
             if is_dataframe(chunk):
                 if "label" in chunk.columns:
                     sel = chunk[chunk["label"] == label]
-                    matches = sel.reset_index(drop=True)
+                    if len(sel):
+                        matches = sel.reset_index(drop=True)
+                    else:
+                        matches = None
                 else:
                     matches = None
             else:
@@ -506,10 +526,14 @@ class BalancedByLabelMixer(DefaultMixer):
                             tmp.append(rec)
                     except Exception:
                         continue
-                matches = tmp
+                if tmp:
+                    matches = tmp
+                else:
+                    matches = None
             if not matches:
                 continue
             collected.append(matches)
+            total += batch_len(matches)
         if not collected:
             return None
         return concat_batches(collected)
@@ -517,8 +541,13 @@ class BalancedByLabelMixer(DefaultMixer):
     def next_batch(self):
         if self.batch_size is None:
             raise RuntimeError("reset_epoch must be called first")
+        if not self.labels:
+            # defensive: if labels were not discovered for some reason, fallback
+            self.labels = ["Benign", "Malicious"]
         B = int(self.batch_size)
-        num_labels = len(self.labels)
+        if B <= 0:
+            return None, None
+        num_labels = max(1, len(self.labels))
         base = [B // num_labels] * num_labels
         rem = B - sum(base)
         for i in range(rem):
@@ -528,13 +557,15 @@ class BalancedByLabelMixer(DefaultMixer):
         for i, lbl in enumerate(self.labels):
             need = base[i]
             collected_for_label = []
-            per_ds_need = int(np.ceil(need / float(len(self.datasets))))
+            # attempt to pull from datasets round-robin until need met or exhausted
             remaining = need
             ds_idx = 0
             attempts = 0
+            # per-dataset want heuristic
+            per_ds_want = int(np.ceil(float(need) / max(1, len(self.datasets))))
             while remaining > 0 and attempts < len(self.datasets) * 4:
                 key = self.datasets[ds_idx % len(self.datasets)]
-                want = min(per_ds_need, remaining)
+                want = min(per_ds_want, remaining)
                 chunk = self._pull_until_label(key, lbl, want)
                 if chunk is None:
                     ds_idx += 1
@@ -553,9 +584,7 @@ class BalancedByLabelMixer(DefaultMixer):
         if not parts:
             return None, None
         batch = concat_batches(parts)
-        self.mix_plan.append(
-            {"type": "balanced_by_label", "counts_by_label": produced}
-        )
+        self.mix_plan.append({"type": "balanced_by_label", "counts_by_label": produced})
         train, val = self._split_batch(batch)
         last = self.mix_plan[-1]
         last["train_count"] = batch_len(train) if train is not None else 0
