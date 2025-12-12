@@ -228,7 +228,7 @@ class TestConfigReaderValidation:
             cr._validate({
                 "commands": [{
                     "command": "train",
-                    "mixer": {"type": "sequence", "datasets": []},
+                    "mixer": {"type": "sequence", "datasets": ["dataset1"]},
                     "load": "not_dict"
                 }]
             })
@@ -238,7 +238,7 @@ class TestConfigReaderValidation:
             cr._validate({
                 "commands": [{
                     "command": "train",
-                    "mixer": {"type": "sequence", "datasets": []},
+                    "mixer": {"type": "sequence", "datasets": ["dataset1"]},
                     "new": "not_dict"
                 }]
             })
@@ -248,7 +248,7 @@ class TestConfigReaderValidation:
             cr._validate({
                 "commands": [{
                     "command": "train",
-                    "mixer": {"type": "sequence", "datasets": []},
+                    "mixer": {"type": "sequence", "datasets": ["dataset1"]},
                     "new": {"bad_key": "value"}
                 }]
             })
