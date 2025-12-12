@@ -1,7 +1,4 @@
-# pipeline_ml_training/minimal_mapper.py
 """
-Minimal mappers returning classes (not instances).
-
 Exports:
  - get_transformer_class(type_name)
  - get_classifier_class(classifier_type)
@@ -10,31 +7,53 @@ Exports:
  - get_mixer_class(mixer_type)
 
 Dotted-path import supported. Module search lists are intentionally small.
+
+Notes:
+ - Functions probe a small set of well-known modules (sklearn, river, xgboost)
+   and will raise informative ValueError/RuntimeError when packages/classes are
+   not found.
 """
 
+from typing import Any, Dict
 import importlib
 
 
 # -------------------------
 # helpers
 # -------------------------
-def _import_from_path(path):
+def _import_from_path(path: str):
+    """
+    Import an attribute given a dotted path like "package.module.Name".
+    Raises ImportError with helpful message when module or attribute missing.
+    """
     parts = path.split(".")
     if len(parts) < 2:
-        raise ImportError("dotted path expected, got: {}".format(path))
+        raise ImportError(f"dotted path expected, got: {path!r}")
     module = ".".join(parts[:-1])
     name = parts[-1]
-    mod = importlib.import_module(module)
+    try:
+        mod = importlib.import_module(module)
+    except Exception as e:
+        raise ImportError(f"Failed to import module '{module}' for path '{path}': {e}")
+    if not hasattr(mod, name):
+        raise ImportError(f"Module '{module}' does not define attribute '{name}'")
     return getattr(mod, name)
 
 
-def _find_in_modules(name, modules):
-    # try exact and capitalized
-    candidates = [name, name[0].upper() + name[1:] if name else name]
+def _find_in_modules(name: str, modules):
+    """
+    Search for a symbol name in a list of module names.
+    Tries exact name and capitalized variant (e.g. 'logisticregression' -> 'Logisticregression').
+    Returns the found attribute or None.
+    """
+    candidates = [name]
+    if name:
+        candidates.append(name[0].upper() + name[1:])
     for m in modules:
         try:
             mod = importlib.import_module(m)
         except Exception:
+            # library not installed or import error — skip safely
             continue
         for c in candidates:
             if hasattr(mod, c):
@@ -45,7 +64,11 @@ def _find_in_modules(name, modules):
 # -------------------------
 # transformer mapper
 # -------------------------
-def get_transformer_class(type_name):
+def get_transformer_class(type_name: str):
+    """
+    Resolve a transformer class by short name (e.g. 'StandardScaler') or dotted path.
+    Tries a small set of sklearn modules.
+    """
     if not type_name:
         raise ValueError("type_name required")
 
@@ -61,15 +84,17 @@ def get_transformer_class(type_name):
     Cls = _find_in_modules(type_name, modules)
     if Cls is not None:
         return Cls
-    raise ValueError(
-        "Transformer '{}' not found (tried sklearn modules)".format(type_name)
-    )
+    raise ValueError(f"Transformer '{type_name}' not found (tried sklearn modules)")
 
 
 # -------------------------
 # classifier mapper
 # -------------------------
-def get_classifier_class(classifier_type):
+def get_classifier_class(classifier_type: str):
+    """
+    Resolve a classifier class by short name or dotted path.
+    Tries sklearn first, then river, and finally xgboost aliases.
+    """
     if not classifier_type:
         raise ValueError("classifier_type required")
 
@@ -88,7 +113,7 @@ def get_classifier_class(classifier_type):
     if Cls is not None:
         return Cls
 
-    # try a small set of river modules
+    # try a small set of river modules (if installed)
     river_modules = [
         "river.tree",
         "river.ensemble",
@@ -98,32 +123,32 @@ def get_classifier_class(classifier_type):
     if Cls is not None:
         return Cls
 
-    # try xgboost common alias
+    # try xgboost common alias (only import if alias requested)
     try:
-        if classifier_type.lower() in (
-            "xgbclassifier",
-            "xgboost",
-            "xgboostclassifier",
-            "xgb",
-        ):
-            from xgboost import XGBClassifier
+        low = classifier_type.lower()
+        if low in ("xgbclassifier", "xgboost", "xgboostclassifier", "xgb"):
+            from xgboost import XGBClassifier  # type: ignore
 
             return XGBClassifier
 
-        # Try to find in xgboost module using _find_in_modules
+        # fall back to looking inside xgboost module for named classes
         Cls = _find_in_modules(classifier_type, ["xgboost"])
         if Cls is not None:
             return Cls
     except Exception:
+        # xgboost not installed or import error — ignore and proceed to final error
         pass
 
-    raise ValueError("Classifier '{}' not found".format(classifier_type))
+    raise ValueError(f"Classifier '{classifier_type}' not found")
 
 
-def prepare_river_nested_model_params(params):
+def prepare_river_nested_model_params(params: Any) -> Any:
     """
-    If params contains {'model': {'type': ..., 'params': {...}}}, instantiate inner model
-    and replace params['model'] with the instantiated object. Returns mutated params.
+    If params is a dict containing {'model': {'type': ..., 'params': {...}}},
+    instantiate the nested river model and return a NEW dict with 'model'
+    replaced by the instantiated model.
+
+    Returns the original params unchanged when no nested model spec is present.
     """
     if not isinstance(params, dict):
         return params
@@ -134,31 +159,38 @@ def prepare_river_nested_model_params(params):
     inner_params = nested.get("params", {}) or {}
     if not inner_type:
         raise ValueError("Nested model spec missing 'type'")
-    # dotted or search river submodules
+
+    # try to resolve the inner class (dotted or via river search)
     try:
         if "." in inner_type:
             InnerCls = _import_from_path(inner_type)
         else:
             InnerCls = _find_in_modules(
-                inner_type,
-                ["river.tree", "river.ensemble", "river.linear_model"],
+                inner_type, ["river.tree", "river.ensemble", "river.linear_model"]
             )
             if InnerCls is None:
+                # try dotted path fallback — may raise ImportError
                 InnerCls = _import_from_path(inner_type)
-        params["model"] = InnerCls(**inner_params)
-        return params
+
+        # instantiate and return a shallow copy with the instantiated model
+        out = dict(params)
+        out["model"] = InnerCls(**inner_params)
+        return out
     except Exception as e:
         raise RuntimeError(
-            "Failed to instantiate nested river model '{}': {}".format(
-                inner_type, e
-            )
+            f"Failed to instantiate nested river model '{inner_type}': {e}"
         )
 
 
 # -------------------------
 # wrapper mapper
 # -------------------------
-def get_wrapper_class(wrapper_name):
+def get_wrapper_class(wrapper_name: str):
+    """
+    Resolve a local wrapper class by short name or dotted path.
+
+    Expected local module: pipeline_ml_training.classifier_wrapper
+    """
     if not wrapper_name:
         raise ValueError("wrapper_name required")
     # dotted path
@@ -166,11 +198,11 @@ def get_wrapper_class(wrapper_name):
         return _import_from_path(wrapper_name)
 
     try:
-        mod = importlib.import_module(
-            "pipeline_ml_training.classifier_wrapper"
+        mod = importlib.import_module("pipeline_ml_training.classifier_wrapper")
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to import local classifier_wrapper module: {e}"
         )
-    except Exception:
-        raise RuntimeError("Failed to import local classifier_wrapper module")
 
     wn = wrapper_name.lower()
     if "sklearn" in wn:
@@ -184,13 +216,16 @@ def get_wrapper_class(wrapper_name):
     if hasattr(mod, wrapper_name):
         return getattr(mod, wrapper_name)
 
-    raise ValueError("Wrapper '{}' not found".format(wrapper_name))
+    raise ValueError(f"Wrapper '{wrapper_name}' not found in local wrapper module")
 
 
 # -------------------------
 # mixer mapper
 # -------------------------
-def get_mixer_class(mixer_type):
+def get_mixer_class(mixer_type: str):
+    """
+    Resolve a mixer class by short name or dotted path. Returns class object.
+    """
     if not mixer_type:
         raise ValueError("mixer_type required")
     # dotted path
@@ -198,13 +233,17 @@ def get_mixer_class(mixer_type):
         return _import_from_path(mixer_type)
     try:
         mod = importlib.import_module("pipeline_ml_training.mixers")
-    except Exception:
-        raise RuntimeError("Failed to import built-in mixers module")
+    except Exception as e:
+        raise RuntimeError(f"Failed to import built-in mixers module: {e}")
 
-    if mixer_type == "sequence":
-        return getattr(mod, "SequenceMixer")
-    if mixer_type == "random_batches":
-        return getattr(mod, "RandomBatchesMixer")
-    if mixer_type == "balanced_by_label":
-        return getattr(mod, "BalancedByLabelMixer")
-    raise ValueError("Unknown mixer type '{}'".format(mixer_type))
+    mapping = {
+        "sequence": "SequenceMixer",
+        "random_batches": "RandomBatchesMixer",
+        "balanced_by_label": "BalancedByLabelMixer",
+    }
+    if mixer_type in mapping:
+        name = mapping[mixer_type]
+        if not hasattr(mod, name):
+            raise RuntimeError(f"Mixers module missing expected class '{name}'")
+        return getattr(mod, name)
+    raise ValueError(f"Unknown mixer type '{mixer_type}'")
