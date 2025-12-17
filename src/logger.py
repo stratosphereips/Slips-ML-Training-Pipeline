@@ -1,87 +1,101 @@
 from .commons import BENIGN, MALICIOUS, BACKGROUND
-import numpy
+import numpy as np
 import os
+from pathlib import Path
 
 
 class Logger:
     def __init__(
         self,
-        experiment_name: str = "default_experiment",
-        path_to_logging_dir: str = "logs",
-        path_to_logfile: str = "training.log",
+        logfile_path,
         overwrite: bool = False,
     ):
-        self.path_to_logfile = path_to_logfile
-        self.path_to_logging_dir = path_to_logging_dir
-        self.name = experiment_name
+        """
+        Logger that writes strictly to a single logfile path.
 
-        os.makedirs(self.path_to_logging_dir, exist_ok=True)
-        os.makedirs(
-            os.path.join(self.path_to_logging_dir, self.name),
-            exist_ok=True,
-        )
-        self.full_logfile_path = os.path.join(
-            self.path_to_logging_dir, self.name, self.path_to_logfile
-        )
+        Parameters
+        ----------
+        logfile_path : str or Path
+            Full path to the logfile (including filename).
+        overwrite : bool
+            If False and file exists, raises FileExistsError.
+        """
+        self.logfile_path = Path(logfile_path)
 
-        if os.path.exists(self.full_logfile_path) and not overwrite:
-            print(
-                f"Logfile '{self.full_logfile_path}' already exists! Aborting to avoid overwrite."
-            )
+        # ensure parent directory exists
+        self.logfile_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if self.logfile_path.exists() and not overwrite:
             raise FileExistsError(
-                f"Logfile '{self.full_logfile_path}' already exists."
+                f"Logfile '{self.logfile_path}' already exists."
             )
-        with open(self.full_logfile_path, "w") as f:
-            f.write("")
+
+        # create / truncate logfile
+        self.logfile_path.write_text("")
 
         # Only consider MALICIOUS and BENIGN labels for metrics
         self.relevant_labels = [MALICIOUS, BENIGN]
 
+    # -------------------------
+    # basic logging
+    # -------------------------
     def write_to_log(self, message: str):
-        with open(self.full_logfile_path, "a") as f:
+        with open(self.logfile_path, "a") as f:
             f.write(message + "\n")
-        # print(f"[{self.name}] {message}")
-
-    def compute_metrics(
-        self, y_true, y_pred, relevant_labels=[MALICIOUS, BENIGN]
-    ):
-        metrics = {
-            "TP": int(
-                numpy.sum((y_pred == MALICIOUS) & (y_true == MALICIOUS))
-            ),
-            "FP": int(numpy.sum((y_pred == MALICIOUS) & (y_true == BENIGN))),
-            "FN": int(numpy.sum((y_pred == BENIGN) & (y_true == MALICIOUS))),
-            "TN": int(numpy.sum((y_pred == BENIGN) & (y_true == BENIGN))),
-        }
-        seen_labels = {
-            label: int(numpy.sum(y_true == label)) for label in relevant_labels
-        }
-        predicted_labels = {
-            label: int(numpy.sum(y_pred == label)) for label in relevant_labels
-        }
-        return metrics, seen_labels, predicted_labels
 
     def log(self, message: str):
-        print(f"[{self.name}] {message}")
+        print(message)
 
-    def _filter_labels(
-        self, y_true, y_pred, relevant_labels=[MALICIOUS, BENIGN]
-    ):
-        mask = numpy.isin(y_true, relevant_labels)
+    # -------------------------
+    # metrics helpers
+    # -------------------------
+    def compute_metrics(self, y_true, y_pred, relevant_labels=None):
+        if relevant_labels is None:
+            relevant_labels = self.relevant_labels
+
+        metrics = {
+            "TP": int(np.sum((y_pred == MALICIOUS) & (y_true == MALICIOUS))),
+            "FP": int(np.sum((y_pred == MALICIOUS) & (y_true == BENIGN))),
+            "FN": int(np.sum((y_pred == BENIGN) & (y_true == MALICIOUS))),
+            "TN": int(np.sum((y_pred == BENIGN) & (y_true == BENIGN))),
+        }
+
+        seen_labels = {
+            label: int(np.sum(y_true == label)) for label in relevant_labels
+        }
+        predicted_labels = {
+            label: int(np.sum(y_pred == label)) for label in relevant_labels
+        }
+
+        return metrics, seen_labels, predicted_labels
+
+    def _filter_labels(self, y_true, y_pred, relevant_labels=None):
+        if relevant_labels is None:
+            relevant_labels = self.relevant_labels
+
+        mask = np.isin(y_true, relevant_labels)
         return y_true[mask], y_pred[mask]
 
+    # -------------------------
+    # training logging
+    # -------------------------
     def save_training_results(
-        self, y_pred_train, y_gt_train, y_pred_val, y_gt_val, sum_labeled_flows
+        self,
+        y_pred_train,
+        y_gt_train,
+        y_pred_val,
+        y_gt_val,
+        sum_labeled_flows,
     ):
-
         relevant_labels = self.relevant_labels
 
+        # train + validation
         if (
             y_pred_val is not None
             and y_gt_val is not None
             and y_pred_train is not None
             and y_gt_train is not None
-            and (not numpy.array_equal(y_gt_train, y_gt_val))
+            and not np.array_equal(y_gt_train, y_gt_val)
         ):
             y_gt_val_filt, y_pred_val_filt = self._filter_labels(
                 y_gt_val, y_pred_val, relevant_labels
@@ -90,94 +104,95 @@ class Logger:
                 y_gt_train, y_pred_train, relevant_labels
             )
 
-            metrics_val, seen_labels_val, predicted_labels_val = (
-                self.compute_metrics(
-                    y_gt_val_filt, y_pred_val_filt, relevant_labels
-                )
+            metrics_val, seen_val, pred_val = self.compute_metrics(
+                y_gt_val_filt, y_pred_val_filt, relevant_labels
             )
-            metrics_train, seen_labels_train, predicted_labels_train = (
-                self.compute_metrics(
-                    y_gt_train_filt, y_pred_train_filt, relevant_labels
-                )
+            metrics_train, seen_train, pred_train = self.compute_metrics(
+                y_gt_train_filt, y_pred_train_filt, relevant_labels
             )
 
             self.write_to_log(
                 f"Total labels: {sum_labeled_flows}, "
                 f"Validation size: {len(y_pred_val_filt)}, "
-                f"Validation seen labels: {seen_labels_val}, "
-                f"Validation predicted labels: {predicted_labels_val}, "
+                f"Validation seen labels: {seen_val}, "
+                f"Validation predicted labels: {pred_val}, "
                 f"Validation metrics: {metrics_val}, "
                 f"Training size: {len(y_gt_train_filt)}, "
-                f"Training seen labels: {seen_labels_train}, "
-                f"Training predicted labels: {predicted_labels_train}, "
+                f"Training seen labels: {seen_train}, "
+                f"Training predicted labels: {pred_train}, "
                 f"Training metrics: {metrics_train}"
             )
-        else:
-            # Only one set (train == val), calculate metrics once
 
+        # train only
+        else:
             y_gt_train_filt, y_pred_train_filt = self._filter_labels(
                 y_gt_train, y_pred_train, relevant_labels
             )
-            metrics, seen_labels, predicted_labels = self.compute_metrics(
+            metrics, seen, pred = self.compute_metrics(
                 y_gt_train_filt, y_pred_train_filt, relevant_labels
             )
 
             self.write_to_log(
                 f"Total labels: {sum_labeled_flows}, "
                 f"Training size: {len(y_pred_train_filt)}, "
-                f"Training seen labels: {seen_labels}, "
-                f"Training predicted labels: {predicted_labels}, "
+                f"Training seen labels: {seen}, "
+                f"Training predicted labels: {pred}, "
                 f"Training metrics: {metrics}"
             )
 
+    # -------------------------
+    # test logging
+    # -------------------------
     def save_test_results(self, original_labels, predicted_labels):
-        # Convert to numpy arrays if not already
-        original_labels = numpy.array(original_labels)
-        predicted_labels = numpy.array(predicted_labels)
+        original_labels = np.asarray(original_labels)
+        predicted_labels = np.asarray(predicted_labels)
 
-        # Discard rows where either label is BACKGROUND
         mask = (original_labels != BACKGROUND) & (
             predicted_labels != BACKGROUND
         )
         filtered_orig = original_labels[mask]
         filtered_pred = predicted_labels[mask]
 
-        # Initialize metrics if not already done
         if not hasattr(self, "malware_metrics"):
             self.malware_metrics = {"TP": 0, "FP": 0, "TN": 0, "FN": 0}
-        if not hasattr(self, "seen_labels"):
             self.seen_labels = {MALICIOUS: 0, BENIGN: 0}
-        if not hasattr(self, "predicted_labels"):
             self.predicted_labels = {MALICIOUS: 0, BENIGN: 0}
 
-        # Update counters for true and predicted labels
         for label in [MALICIOUS, BENIGN]:
-            self.seen_labels[label] += int(numpy.sum(filtered_orig == label))
+            self.seen_labels[label] += int(np.sum(filtered_orig == label))
             self.predicted_labels[label] += int(
-                numpy.sum(filtered_pred == label)
+                np.sum(filtered_pred == label)
             )
 
-        # Calculate TP, FP, TN, FN from malware perspective
         self.malware_metrics["TP"] += int(
-            numpy.sum(
-                (filtered_orig == MALICIOUS) & (filtered_pred == MALICIOUS)
+            np.sum(
+                (filtered_orig == MALICIOUS)
+                & (filtered_pred == MALICIOUS)
             )
         )
         self.malware_metrics["FP"] += int(
-            numpy.sum((filtered_orig == BENIGN) & (filtered_pred == MALICIOUS))
+            np.sum(
+                (filtered_orig == BENIGN)
+                & (filtered_pred == MALICIOUS)
+            )
         )
         self.malware_metrics["FN"] += int(
-            numpy.sum((filtered_orig == MALICIOUS) & (filtered_pred == BENIGN))
+            np.sum(
+                (filtered_orig == MALICIOUS)
+                & (filtered_pred == BENIGN)
+            )
         )
         self.malware_metrics["TN"] += int(
-            numpy.sum((filtered_orig == BENIGN) & (filtered_pred == BENIGN))
+            np.sum(
+                (filtered_orig == BENIGN)
+                & (filtered_pred == BENIGN)
+            )
         )
 
         total_flows = sum(self.seen_labels.values())
-        log_str = (
+        self.write_to_log(
             f"Total flows: {total_flows}; "
             f"Seen labels: {self.seen_labels}; "
             f"Predicted labels: {self.predicted_labels}; "
-            f"Malware metrics (TP/FP/TN/FN): {self.malware_metrics}; "
+            f"Malware metrics (TP/FP/TN/FN): {self.malware_metrics}"
         )
-        self.write_to_log(log_str)
