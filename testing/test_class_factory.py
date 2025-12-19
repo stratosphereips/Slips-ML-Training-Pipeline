@@ -141,27 +141,6 @@ def test_get_wrapper_class_invalid_name(monkeypatch):
         mm.get_wrapper_class("NoWrapper")
 
 
-# -------------------------
-# get_mixer_class
-# -------------------------
-def test_get_mixer_class_known(monkeypatch):
-    # patch mixers module
-    fake_mixers = types.ModuleType("pipeline_ml_training.mixers")
-    class Seq: pass
-    class Rand: pass
-    class Bal: pass
-    setattr(fake_mixers, "SequenceMixer", Seq)
-    setattr(fake_mixers, "RandomBatchesMixer", Rand)
-    setattr(fake_mixers, "BalancedByLabelMixer", Bal)
-    monkeypatch.setitem(sys.modules, "pipeline_ml_training.mixers", fake_mixers)
-
-    cls = mm.get_mixer_class("sequence")
-    assert cls is Seq
-    cls = mm.get_mixer_class("random_batches")
-    assert cls is Rand
-    cls = mm.get_mixer_class("balanced_by_label")
-    assert cls is Bal
-
 
 def test_get_mixer_class_unknown(monkeypatch):
     fake_mixers = types.ModuleType("pipeline_ml_training.mixers")

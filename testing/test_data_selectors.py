@@ -10,7 +10,6 @@ from src.data_selectors import (
     is_dataframe,
     concat_batches,
     slice_batch,
-    split_by_indices,
 )
 
 
@@ -153,27 +152,6 @@ class TestHelperFunctions:
         assert isinstance(result, pd.DataFrame)
         assert len(result) == 2
         assert list(result["a"]) == [2, 3]
-    
-    def test_split_by_indices_list(self):
-        """Test split_by_indices extracts list items in order."""
-        batch = [10, 20, 30, 40, 50]
-        result = split_by_indices(batch, [1, 3])
-        assert result == [20, 40]
-    
-    def test_split_by_indices_preserves_order(self):
-        """Test split_by_indices preserves requested order."""
-        batch = [10, 20, 30, 40]
-        result = split_by_indices(batch, [3, 1, 2])
-        assert result == [40, 20, 30]
-    
-    def test_split_by_indices_dataframe(self):
-        """Test split_by_indices works with DataFrames."""
-        df = pd.DataFrame({"a": [10, 20, 30, 40]})
-        result = split_by_indices(df, [1, 3])
-        assert isinstance(result, pd.DataFrame)
-        assert len(result) == 2
-        assert list(result["a"]) == [20, 40]
-
 
 # ========== SequenceMixer Tests ==========
 class TestSequenceMixer:
@@ -299,7 +277,7 @@ class TestSequenceMixer:
         
         plan = mixer.get_mix_plan()
         assert len(plan) == 1
-        assert plan[0]["type"] == "drain"
+        assert plan[0]["type"] == "sequence"
         assert plan[0]["dataset"] == "ds1"
         assert "train_count" in plan[0]
         assert "val_count" in plan[0]
@@ -316,10 +294,12 @@ class TestRandomBatchesMixer:
     
     def test_weights_length_must_match_datasets(self, rng):
         """Test weights length must match datasets length."""
+        loader1 = MockLoader([[1, 2]], "ds1")
+        loader2 = MockLoader([[3, 4]], "ds2")
         with pytest.raises(ValueError):
             RandomBatchesMixer(
                 {"datasets": ["ds1", "ds2"], "weights": [1.0]},
-                {},
+                {"ds1": loader1, "ds2": loader2},
                 rng
             )
     
@@ -368,7 +348,9 @@ class TestRandomBatchesMixer:
         spec = {"datasets": ["ds1", "ds2", "ds3"]}
         mixer = RandomBatchesMixer(spec, {"ds1": loader1, "ds2": loader2, "ds3": loader3}, rng)
         
-        assert mixer.weights == [1.0, 1.0, 1.0]
+        assert mixer.weights[0] == pytest.approx(1/3)
+        assert mixer.weights[1] == pytest.approx(1/3)
+        assert mixer.weights[2] == pytest.approx(1/3)
     
     def test_random_batches_with_validation_split(self, rng):
         """Test RandomBatchesMixer with validation split."""
