@@ -1,4 +1,10 @@
 
+# Ho wto run updated version
+
+Run pipeline_ml_training$ python run.py 
+The results should be in pipeline_ml_training/experiments
+
+# Not updated yet, not relevant
 
 ## Overview
 This project provides a modular and scalable **machine learning pipeline** built in **Python** for data preprocessing, model training, evaluation for purpose of offline training models to be used in SLIPS ML modules. The models we are interested in support online learning and are able to be "extended" by partial fit, transfer learning and alike.
