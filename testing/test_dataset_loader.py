@@ -267,6 +267,8 @@ class TestZeekDataset:
         batch1 = ds.next_batch()
         batch2 = ds.next_batch()
         batch3 = ds.next_batch()
+        assert len(batch1) == 2
+        assert len(batch2) == 2
         assert batch3 is None
         
         # Manually reset

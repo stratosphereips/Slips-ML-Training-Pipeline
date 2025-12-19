@@ -99,10 +99,7 @@ class DefaultMixer(object):
         try:
             loader.reset_epoch(batch_size=batch_size)
         except TypeError:
-            try:
-                loader.reset_epoch()
-            except Exception:
-                pass
+            loader.reset_epoch()
 
     def reset_epoch(self, batch_size, epoch_idx=0):
         self.batch_size = batch_size
@@ -324,7 +321,7 @@ class RandomBatchesMixer(DefaultMixer):
         # attempt to pull requested counts, redistribute shortfalls
         parts = []
         produced = {}
-        remaining_to_fill = 0
+
         # first pass: ask each loader
         shortfall = 0
         for i, key in enumerate(self.datasets):
