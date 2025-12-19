@@ -1,5 +1,5 @@
 import pytest
-from pipeline_ml_training.conn_normalizer import (
+from src.conn_normalizer import (
     ConnToSlipsConverter,
     CANONICAL_FIELDS,
 )

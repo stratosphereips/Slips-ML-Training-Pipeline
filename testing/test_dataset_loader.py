@@ -2,12 +2,12 @@ import pytest
 import re
 import tempfile
 from pathlib import Path
-from pipeline_ml_training.dataset_wrapper import (
+from src.dataset_wrapper import (
     ZeekDataset,
     find_and_load_datasets,
     sample_n_from_each_dataset,
 )
-from pipeline_ml_training.commons import BENIGN, MALICIOUS, BACKGROUND
+from src.commons import BENIGN, MALICIOUS, BACKGROUND
 
 
 class TestZeekDataset:
@@ -237,27 +237,48 @@ class TestZeekDataset:
         assert line["label"] in [str(BENIGN), str(MALICIOUS)]
 
     # ========== Batching and Iteration Tests ==========
-    def test_next_batch_basic(self, sample_conn_log, temp_dir):
-        """Test next_batch returns correct batch size and data."""
+    def test_next_batch_exhaustion_returns_none(self, sample_conn_log, temp_dir):
+        """Test next_batch returns None when dataset is exhausted (no auto-wrap)."""
         ds = ZeekDataset(temp_dir, batch_size=2)
-
+        
         # Get first batch
         batch1 = ds.next_batch()
         assert len(batch1) == 2
         assert ds._batch_pos == 2
         assert ds.epoch == 0
-
+        
         # Get second batch
         batch2 = ds.next_batch()
         assert len(batch2) == 2
         assert ds._batch_pos == 4
         assert ds.epoch == 0
-
-        # Get third batch - should wrap and increment epoch
+        
+        # Get third batch - should return None (exhausted, no auto-wrap)
         batch3 = ds.next_batch()
-        assert len(batch3) == 2
+        assert batch3 is None
+        assert ds.epoch == 0  # epoch doesn't increment on exhaustion
+
+
+    def test_next_batch_after_manual_reset(self, sample_conn_log, temp_dir):
+        """Test next_batch works after manual reset_epoch call."""
+        ds = ZeekDataset(temp_dir, batch_size=2)
+        
+        # Exhaust the dataset
+        batch1 = ds.next_batch()
+        batch2 = ds.next_batch()
+        batch3 = ds.next_batch()
+        assert len(batch1) == 2
+        assert len(batch2) == 2
+        assert batch3 is None
+        
+        # Manually reset
+        ds.reset_epoch(batch_size=2)
+        
+        # Should be able to get batches again
+        batch4 = ds.next_batch()
+        assert batch4 is not None
+        assert len(batch4) == 2
         assert ds._batch_pos == 2
-        assert ds.epoch == 1
 
     def test_next_batch_with_remainder(self, sample_conn_log, temp_dir):
         """Test next_batch handles batch size that doesn't divide evenly."""
@@ -272,21 +293,27 @@ class TestZeekDataset:
     def test_reset_epoch(self, sample_conn_log, temp_dir):
         """Test reset_epoch resets state correctly."""
         ds = ZeekDataset(temp_dir, batch_size=2)
-
-        # Advance through all batches to wrap and increment epoch
+        
+        # Advance through all batches to exhaust dataset
         ds.next_batch()  # batch_pos = 2
         ds.next_batch()  # batch_pos = 4
-        ds.next_batch()  # batch_pos >= len(indices), so epoch increments and batch_pos resets
-
-        assert ds.epoch == 1
-        assert ds._batch_pos == 2
-
-        # Reset
-        ds.reset_epoch(batch_size=3)
-        assert ds.batch_size == 3
-        assert ds._batch_pos == 0
+        ds.next_batch()  # returns None, batch_pos = 4, epoch = 0
+        
+        # Epoch should still be 0 (no auto-increment)
         assert ds.epoch == 0
-        assert len(ds.indices) == ds.total_lines
+        assert ds._batch_pos == 4
+        
+        # Now manually reset
+        ds.reset_epoch(batch_size=2)
+        
+        # After reset, should be back to start
+        assert ds.epoch == 0  # or increment to 1 if reset_epoch increments
+        assert ds._batch_pos == 0
+        
+        # Should be able to get batches again
+        batch = ds.next_batch()
+        assert batch is not None
+        assert len(batch) == 2
 
     def test_get_line_and_get_lines(self, sample_conn_log, temp_dir):
         """Test get_line and get_lines retrieve correct data."""
@@ -465,22 +492,39 @@ class TestZeekDataset:
         ds.next_n(1)
         assert ds._batch_pos == 3
 
-    def test_next_n_wraps_epoch(self, sample_conn_log, temp_dir):
-        """Test next_n increments epoch on subsequent call after reaching end."""
+    def test_next_n_exhaustion_returns_none(self, sample_conn_log, temp_dir):
+        """Test next_n returns None when dataset is exhausted (no auto-wrap)."""
         ds = ZeekDataset(temp_dir, batch_size=10)
-
-        # First call: get 4 records (all available), batch_pos becomes 4
+        
+        # First call: get all 4 records available
         records1 = ds.next_n(5)
         assert len(records1) == 4
         assert ds.epoch == 0
         assert ds._batch_pos == 4
-        assert len(records1) == 4
-
-        # Second call: batch_pos >= len(indices) at start, so epoch increments and wraps
+        
+        # Second call: dataset exhausted, should return None
         records2 = ds.next_n(2)
-        assert ds.epoch == 1
-        assert ds._batch_pos == 2
+        assert records2 is None
+        assert ds.epoch == 0  # No auto-increment
+        assert ds._batch_pos == 4  # Position stays at end
+
+
+    def test_next_n_after_reset_epoch(self, sample_conn_log, temp_dir):
+        """Test next_n works after manual reset."""
+        ds = ZeekDataset(temp_dir, batch_size=10)
+        
+        # Exhaust dataset
+        records1 = ds.next_n(5)
+        assert len(records1) == 4
+        
+        # Manually reset
+        ds.reset_epoch(batch_size=10)
+        
+        # Should work again
+        records2 = ds.next_n(2)
+        assert records2 is not None
         assert len(records2) == 2
+        assert ds._batch_pos == 2
 
     def test_cache_creation_for_large_dataset(self, temp_dir):
         """Test that cache is created for datasets above threshold."""

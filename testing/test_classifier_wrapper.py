@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 # Import the module under test
-from pipeline_ml_training import classifier_wrapper as cw
+from src import classifier_wrapper as cw
 
 
 # Provide a tiny 'commons' module for the imported code to use.

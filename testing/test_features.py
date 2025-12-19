@@ -1,8 +1,8 @@
 import pytest
 import pandas as pd
 import numpy as np
-from pipeline_ml_training.features import FeatureExtraction
-from pipeline_ml_training.commons import BENIGN, MALICIOUS
+from src.features import FeatureExtraction
+from src.commons import BENIGN, MALICIOUS
 
 
 class TestFeatureExtraction:

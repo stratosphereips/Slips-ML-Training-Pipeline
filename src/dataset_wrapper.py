@@ -7,7 +7,7 @@
 #   - Defaults unlabeled flows to BENIGN.
 #   - Stores index in cache/ directory for large files (>50k valid flows) and reloads automatically.
 
-from pipeline_ml_training.commons import BENIGN, MALICIOUS, BACKGROUND
+from .commons import BENIGN, MALICIOUS, BACKGROUND
 import random
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -235,10 +235,6 @@ class ZeekDataset:
                 yield record
                 idx += 1
 
-                if idx == 1:
-                    print(record)
-                    print(types)
-
     def _cast(self, value: str, typ: Optional[str]):
         if value in ("-", ""):
             return None
@@ -287,28 +283,23 @@ class ZeekDataset:
         if not hasattr(self, "valid_indices") or self.total_lines == 0:
             raise RuntimeError("Dataset empty or not indexed")
 
-        # If we finished an epoch, and start a new one
+        # If we've exhausted the epoch, signal exhaustion to callers
         if self._batch_pos >= len(self.indices):
-            self.epoch += 1
-            self._batch_pos = 0
+            return None
 
         # get the *relative* valid-flow indices for this batch (values 0..total_lines-1)
-        rel_inds = self.indices[
-            self._batch_pos : self._batch_pos + self.batch_size
-        ]
-        self._batch_pos += self.batch_size
+        rel_inds = self.indices[self._batch_pos : self._batch_pos + self.batch_size]
+        # advance the pointer by how many we will return
+        self._batch_pos += len(rel_inds)
 
-        # if nothing requested, return empty (shouldn't happen normally)
+        # if nothing requested or nothing left, signal exhaustion
         if not rel_inds:
-            return []
+            return None
 
         # Map relative indices -> actual file data-line positions
-        # (self.valid_indices stores file positions for each relative index)
         target_positions = {self.valid_indices[r] for r in rel_inds}
         # map position -> relative index label (for label lookup)
-        pos_to_label = {
-            self.valid_indices[r]: self.labels[r] for r in rel_inds
-        }
+        pos_to_label = {self.valid_indices[r]: self.labels[r] for r in rel_inds}
 
         records = []
         found = 0
@@ -326,8 +317,7 @@ class ZeekDataset:
                     parts = line.strip().split("\t")
                     record = {
                         h: self._cast(
-                            parts[i],
-                            self.types[i] if i < len(self.types) else None,
+                            parts[i], self.types[i] if i < len(self.types) else None
                         )
                         for i, h in enumerate(self.headers)
                     }
@@ -338,45 +328,33 @@ class ZeekDataset:
                         break
                 file_idx += 1
 
-        # defensive: if we didn't find all expected records, warn (shouldn't happen)
         if found != len(target_positions):
-            # optional: raise or log; for now we print a short warning
-            print(
-                f"Warning: expected {len(target_positions)} records in batch but found {found}"
-            )
+            print(f"Warning: expected {len(target_positions)} records in batch but found {found}")
 
         return records
 
+
     def next_n(self, n: int):
-        """
-        Return exactly up to `n` records from this dataset (using the same
-        indexing logic as next_batch). Advances the internal pointer by n.
-        If the epoch wraps, increments epoch and continues from start.
-        Returns a list of records (possibly empty).
-        """
         if not hasattr(self, "valid_indices") or self.total_lines == 0:
             raise RuntimeError("Dataset empty or not indexed")
 
         if n <= 0:
             return []
 
-        # If we finished an epoch and start a new one
+        # If we've exhausted this epoch, signal exhaustion
         if self._batch_pos >= len(self.indices):
-            self.epoch += 1
-            self._batch_pos = 0
+            return None
 
-        # compute relative indices for requested n samples
-        rel_inds = self.indices[self._batch_pos : self._batch_pos + n]
+        # compute relative indices for up to n samples (cap at epoch end)
+        end_pos = min(len(self.indices), self._batch_pos + n)
+        rel_inds = self.indices[self._batch_pos : end_pos]
         self._batch_pos += len(rel_inds)
 
         if not rel_inds:
-            return []
+            return None
 
-        # Map relative indices -> actual file data-line positions
         target_positions = {self.valid_indices[r] for r in rel_inds}
-        pos_to_label = {
-            self.valid_indices[r]: self.labels[r] for r in rel_inds
-        }
+        pos_to_label = {self.valid_indices[r]: self.labels[r] for r in rel_inds}
 
         records = []
         found = 0
@@ -407,12 +385,10 @@ class ZeekDataset:
                 file_idx += 1
 
         if found != len(target_positions):
-            # warn but continue (shouldn't normally happen)
-            print(
-                f"Warning: expected {len(target_positions)} records but found {found}"
-            )
+            print(f"Warning: expected {len(target_positions)} records but found {found}")
 
         return records
+
 
 
 # -------------------

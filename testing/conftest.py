@@ -6,11 +6,18 @@ import sys
 import datetime
 import io
 import traceback
+from pathlib import Path
 
-# --- Ensure pipeline_ml_training importable during collection ---
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
+
+# Project root is one level up from testing/
+ROOT = Path(__file__).resolve().parents[1]   
+
+# Ensure project root is on sys.path so `import src.<module>` works during collection
+root_str = str(ROOT)
+if root_str not in sys.path:
+    sys.path.insert(0, root_str)
+
+
 
 # --- Prepare logfile path immediately (so it's available even if collection fails) ---
 LOGS_DIR = os.path.join(os.path.dirname(__file__), "test_logs")

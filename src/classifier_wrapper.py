@@ -1,9 +1,8 @@
 import pickle
 from pathlib import Path
-from pipeline_ml_training.commons import BENIGN, MALICIOUS
+from .commons import BENIGN, MALICIOUS
 from typing import Union
 import numpy
-
 
 # Author: Jan Svoboda
 # functionality: Wrapper for classifiers to provide a common interface for training and prediction
