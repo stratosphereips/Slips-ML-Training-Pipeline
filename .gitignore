@@ -2,4 +2,4 @@ __pycache*
 cache/*
 testing/test_logs/*
 experiments/*
-./src/cache/*
+src/cache/*
