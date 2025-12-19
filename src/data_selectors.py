@@ -296,7 +296,7 @@ class RandomBatchesMixer(DefaultMixer):
         self.datasets = [self.resolve_key(k) for k in ds]
         weights = spec.get("weights")
         if weights is None:
-            weights = [1.0] * len(self.datasets)
+            weights = ([1.0/ len(self.datasets)] * len(self.datasets))
         if len(weights) != len(self.datasets):
             raise ValueError("random_batches weights length must match datasets")
         self.weights = np.asarray(weights, dtype=float)
