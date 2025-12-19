@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# plot_test_performance.py (drop-in replacement)
 import argparse
 import os
 import traceback
