@@ -1,7 +1,6 @@
 import types
 import sys
 import pytest
-from unittest.mock import MagicMock
 
 from src import class_factory as mm
 
