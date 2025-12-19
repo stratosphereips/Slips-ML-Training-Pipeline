@@ -189,7 +189,7 @@ def get_wrapper_class(wrapper_name: str):
     """
     Resolve a local wrapper class by short name or dotted path.
 
-    Expected local module: pipeline_ml_training.classifier_wrapper
+    Expected local module: src.classifier_wrapper
     """
     if not wrapper_name:
         raise ValueError("wrapper_name required")
@@ -198,7 +198,7 @@ def get_wrapper_class(wrapper_name: str):
         return _import_from_path(wrapper_name)
 
     try:
-        mod = importlib.import_module("pipeline_ml_training.classifier_wrapper")
+        mod = importlib.import_module("src.classifier_wrapper")
     except Exception as e:
         raise RuntimeError(
             f"Failed to import local classifier_wrapper module: {e}"
@@ -232,7 +232,7 @@ def get_mixer_class(mixer_type: str):
     if "." in mixer_type:
         return _import_from_path(mixer_type)
     try:
-        mod = importlib.import_module("pipeline_ml_training.mixers")
+        mod = importlib.import_module("src.data_selectors")
     except Exception as e:
         raise RuntimeError(f"Failed to import built-in mixers module: {e}")
 
