@@ -8,3 +8,4 @@ ipython
 river
 mock
 pre-commit
+pytest
