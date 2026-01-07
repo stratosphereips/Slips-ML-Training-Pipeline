@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 # Project root is one level up from testing/
-ROOT = Path(__file__).resolve().parents[1]   
+ROOT = Path(__file__).resolve().parents[1]
 
 # Ensure project root is on sys.path so `import src.<module>` works during collection
 root_str = str(ROOT)
@@ -203,7 +203,7 @@ def pytest_configure(config):
     if patched:
         print(f"[conftest] patched terminalreporter writes to logfile {_logfile_path}", file=sys.__stdout__)
     else:
-        print(f"[conftest] WARN: terminalreporter not patched; some output may be missing", file=sys.__stdout__)
+        print("[conftest] WARN: terminalreporter not patched; some output may be missing", file=sys.__stdout__)
 
 def pytest_unconfigure(config):
     """

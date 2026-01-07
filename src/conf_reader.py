@@ -291,4 +291,3 @@ class ConfigReader:
                 "Top-level 'classes' must be defined and non-empty"
             )
         return classes
-

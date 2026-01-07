@@ -12,7 +12,7 @@ def fake_module(tmp_path):
     mod_name = "fake_module"
     cls_name = "FakeClass"
     mod = types.ModuleType(mod_name)
-    
+
     # class that can accept any kwargs
     class FakeClass:
         def __init__(self, **kwargs):
@@ -84,9 +84,10 @@ def test_get_classifier_class_dotted(fake_module):
 
 
 def test_get_classifier_class_xgb(monkeypatch):
-    import types, sys
+    import types
+    import sys
     fake_xgb = types.ModuleType("xgboost")
-    
+
     class XGBClassifier:
         pass
 
@@ -120,7 +121,6 @@ def test_prepare_river_nested_model_params_instantiate(fake_module):
     mod_name, cls_name, _ = fake_module
     params = {"model": {"type": f"{mod_name}.{cls_name}", "params": {"a": 1}}}
     out = mm.prepare_river_nested_model_params(params)
-    from types import ModuleType
 
     # check it's an instance
     cls_obj = getattr(sys.modules[mod_name], cls_name)

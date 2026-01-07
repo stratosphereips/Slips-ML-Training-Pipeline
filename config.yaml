@@ -29,10 +29,12 @@ model:
   save_name: "classifier.bin"
 
 commands:
-  - name: "train_seq"
-    command: "train"
-    mixer:
+  - name: "train_seq" # command name
+    command: "train" # train/test
+    mixer: # mixer = data selection strategy: sequence, balanced, random
       type: "sequence"
+      # in sequence, drain all of the datasets to the end,
+      # then begin with a new one
       datasets: ["001", "008", "010"]
 
 
@@ -40,4 +42,6 @@ commands:
     command: "test"
     mixer:
       type: "sequence"
+      # in sequence, drain all of the datasets to the end,
+      # then begin with a new one  BUT here TEST ALL
       datasets: ["001", "008", "009", "010"]
