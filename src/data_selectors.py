@@ -18,7 +18,7 @@ except Exception:
     pd = None
 
 # -------------------------
-# helpers 
+# helpers
 # -------------------------
 def is_dataframe(x):
     return pd is not None and isinstance(x, pd.DataFrame)
@@ -403,7 +403,7 @@ class BalancedByLabelMixer(DefaultMixer):
         self.buffers = {}
         # discover labels if not provided
         if self.provided_labels:
-            self.labels = [l for l in list(self.provided_labels) if l is not None]
+            self.labels = [lab for lab in list(self.provided_labels) if lab is not None]
         else:
             labels_set = set()
             for k in self.datasets:

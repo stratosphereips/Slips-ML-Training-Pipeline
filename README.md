@@ -1,7 +1,7 @@
 
 # How to run updated version
 
-Run pipeline_ml_training$ python run.py 
+Run pipeline_ml_training$ python run.py
 The results should be in pipeline_ml_training/experiments
 
 Run tests via pytest --confcutdir=.  or simply "pytest "

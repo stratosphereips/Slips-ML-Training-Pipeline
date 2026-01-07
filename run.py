@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+
 import sys
 from pathlib import Path
 import traceback
@@ -9,6 +10,7 @@ sys.path.insert(0, str(SRC))
 
 # Now import the pipeline module (the module lives in src/)
 from pipeline import PipelineRunner  # imports src/pipeline.py as module 'pipeline'
+
 
 
 def main(config_path: str = "./config.yaml"):

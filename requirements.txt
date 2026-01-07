@@ -7,3 +7,4 @@ ipykernel
 ipython
 river
 mock
+pre-commit

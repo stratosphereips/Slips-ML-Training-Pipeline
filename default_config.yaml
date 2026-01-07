@@ -1,24 +1,34 @@
 # default_config.yaml - package-level defaults for the pipeline
 
 experiment_name: default_experiment
+# root to the datasets folder /root/001 & 002 & 003 ...
 root: ../../../dataset-private/
 seed: 1111
 validation_split: 0.1
+#unified sizes for training and testing. test can have more than train.
 batch_size_train: 500
 batch_size_test: 1000
 classes: ["Benign", "Malicious"]
 
+# we need separate scripts for plotting.
+# these were taken from SLIPS and changed to fit this pipeline
 plotting_pths:
   training: "./src/plot_utils/plot_train_perf.py"
   testing: "./src/plot_utils/plot_test_perf.py"
-  
+
 paths:
+  # where everything is stored at the end
   experiment_dir: ./experiments
 
 dataset_loader:
+  # Where to search for datasets -
+  # /dataset_folder/001.../data/conn.log.labeled or similar
   data_subdir: data
-  persist_cache_threshold: 30000
+  # the separated lines are saved onto disk if num flows > threshold
+  persist_cache_threshold: 20000
   cache_dir: ./cache
+
+  # order of names which the loader will search for. only conn for now
   labeled_filenames:
     - conn.log.labeled
     - labeled-conn.log
@@ -29,15 +39,18 @@ dataset_loader:
 
 features:
   default_label: Benign
+  # these protocols behave differently in zeek logs
   protocols_to_discard: [arp, ARP, icmp, igmp, ipv6-icmp, ""]
 
 preprocessing:
-  steps: []                 
+  steps: []
   save_steps: true
+  # dont touch, saving/loading uses this
   step_filename_template: "{name}.bin"
 
 model:
-  wrapper: SKLearnClassifierWrapper
+
+  wrapper: SKLearnClassifierWrapper # basic linear classif.
   classifier_type: SGDClassifier
   classifier_params:
     loss: hinge
