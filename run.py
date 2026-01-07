@@ -12,8 +12,7 @@ sys.path.insert(0, str(SRC))
 from pipeline import PipelineRunner  # imports src/pipeline.py as module 'pipeline'
 
 
-
-def main(config_path: str = "./config.yaml"):
+def main(config_path: str = "./default_config.yaml"):
     """
     Initialize and run the pipeline using the specified config file.
     Returns 0 on success, 1 on failure.
@@ -29,5 +28,5 @@ def main(config_path: str = "./config.yaml"):
 
 
 if __name__ == "__main__":
-    cfg = sys.argv[1] if len(sys.argv) > 1 else "./config.yaml"
+    cfg = sys.argv[1] if len(sys.argv) > 1 else "./default_config.yaml"
     sys.exit(main(cfg))

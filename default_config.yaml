@@ -1,34 +1,25 @@
-# default_config.yaml - package-level defaults for the pipeline
-
 experiment_name: default_experiment
-# root to the datasets folder /root/001 & 002 & 003 ...
-root: ../../../dataset-private/
+root:
 seed: 1111
 validation_split: 0.1
-#unified sizes for training and testing. test can have more than train.
 batch_size_train: 500
 batch_size_test: 1000
+
 classes: ["Benign", "Malicious"]
 
-# we need separate scripts for plotting.
-# these were taken from SLIPS and changed to fit this pipeline
+# plotting scripts (paths are relative to the config file by default)
 plotting_pths:
   training: "./src/plot_utils/plot_train_perf.py"
   testing: "./src/plot_utils/plot_test_perf.py"
 
 paths:
-  # where everything is stored at the end
   experiment_dir: ./experiments
+  preprocessing_dir_name: preprocessing
 
 dataset_loader:
-  # Where to search for datasets -
-  # /dataset_folder/001.../data/conn.log.labeled or similar
   data_subdir: data
-  # the separated lines are saved onto disk if num flows > threshold
   persist_cache_threshold: 20000
   cache_dir: ./cache
-
-  # order of names which the loader will search for. only conn for now
   labeled_filenames:
     - conn.log.labeled
     - labeled-conn.log
@@ -39,22 +30,51 @@ dataset_loader:
 
 features:
   default_label: Benign
-  # these protocols behave differently in zeek logs
-  protocols_to_discard: [arp, ARP, icmp, igmp, ipv6-icmp, ""]
+  protocols_to_discard:
+    - arp
+    - ARP
+    - icmp
+    - igmp
+    - ipv6-icmp
+    - ""
 
 preprocessing:
-  steps: []
+  # steps are (name, type, params)
+  # runner will instantiate these via factory mapping (type -> class)
+  steps:
+    - name: "scaler"
+      type: "StandardScaler"
+      params: {}
+    # - name: "pca"
+    #  type: "IncrementalPCA"
+    #  params:
+    #    n_components: 7
   save_steps: true
-  # dont touch, saving/loading uses this
   step_filename_template: "{name}.bin"
 
 model:
-
-  wrapper: SKLearnClassifierWrapper # basic linear classif.
+  wrapper: SKLearnClassifierWrapper
   classifier_type: SGDClassifier
   classifier_params:
     loss: hinge
     penalty: l2
   save_name: classifier.bin
+  classes: ["Benign", "Malicious"]
+  dummy_flows: {}
 
-commands: []   # no commands by default
+commands:
+  - name: "train_seq" # command name
+    command: "train" # train/test
+    mixer: # mixer = data selection strategy: sequence, balanced, random
+      type: "sequence"
+      # in sequence, drain all of the datasets to the end,
+      # then begin with a new one
+      datasets: ["001", "008", "010"]
+
+  - name: "test_all"
+    command: "test"
+    mixer:
+      type: "sequence"
+      # in sequence, drain all of the datasets to the end,
+      # then begin with a new one  BUT here TEST ALL
+      datasets: ["001", "008", "009", "010"]
