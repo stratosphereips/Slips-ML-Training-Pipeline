@@ -25,7 +25,6 @@ model:
   classifier_params:
     loss: "hinge"
     penalty: "l2"
-    random_state: 2025
   save_name: "classifier.bin"
 
 commands:

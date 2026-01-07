@@ -4,3 +4,4 @@ testing/test_logs/*
 experiments/*
 src/cache/*
 .ruff_cache/
+config.yaml
