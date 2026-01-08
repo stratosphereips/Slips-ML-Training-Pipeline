@@ -124,6 +124,38 @@ preprocessor.add_step("scaler", StandardScaler())
 * Update `src.class_factory.get_mixer_class` or reference a mixer by dotted path from the config to use a custom mixer.
 
 ---
+## Loading saved models & preprocessing
+
+The pipeline can reuse preprocessing steps and trained models from disk via configuration. This is useful for testing, fine-tuning, or continuing training from a previous run.
+
+**Loading preprocessing steps**
+* Use preprocessing.load_from to point to a directory containing saved preprocessing artifacts (*.bin).
+* Absolute paths are used as-is.
+* Relative paths are resolved relative to the experiment root (experiments/<experiment_name>).
+
+```yaml
+preprocessing:
+  load_from: output/preprocessing
+```
+
+At startup, the pipeline calls PreprocessingWrapper.load(...) and expects one file per preprocessing step, named using the configured filename template (default: {name}.bin).
+* Loading a trained model
+* Use model.load_from to load a previously trained classifier from disk.
+* The directory must contain a serialized classifier binary.
+* The default filename is classifier.bin and can be overridden via model.load_name.
+
+```yaml
+model:
+  load_from: output/models
+  load_name: classifier.bin
+```
+
+During initialization, the pipeline:
+* builds the classifier wrapper
+* loads the classifier from the specified directory
+* uses it for subsequent training or testing commands
+
+----
 
 ## SLIPS
 
