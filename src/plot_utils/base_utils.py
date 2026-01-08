@@ -419,10 +419,16 @@ def plot_major_metrics_together(
         except Exception:
             x_axis = list(range(1, n + 1))
 
-    plt.figure(figsize=(8, 4.5))
+        plt.figure(figsize=(8, 4.5))
     for m in metric_names:
         vals = metric_values[m]
-        plt.plot(x_axis, vals, label=m, linewidth=1.5, marker=None)
+        # show a marker when there's only one point so single-point series are visible
+        marker = "o" if len(vals) == 1 else None
+        plt.plot(x_axis, vals, label=m, linewidth=1.5, marker=marker)
+        # Plot scatter points at the vertices (start and end)
+        plt.scatter([x_axis[0], x_axis[-1]], [vals[0], vals[-1]],
+                    color=plt.gca().lines[-1].get_color(), s=30, zorder=3, label=None)
+
 
     plt.xlabel(xlabel)
     plt.ylabel("Value")
