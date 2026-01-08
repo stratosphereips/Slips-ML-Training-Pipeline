@@ -357,8 +357,9 @@ def plot_counts_series(
     x_positions = list(range(batch_count))
 
     plt.figure(figsize=(9, 4))
+    marker = "o" if batch_count == 1 else None
     for cls in classes:
-        plt.plot(x_positions, values_per_class[cls], label=cls, linewidth=1)
+        plt.plot(x_positions, values_per_class[cls], label=cls, linewidth=1, marker=marker)
 
     if xlabels is None:
         labels = [str(i) for i in range(batch_count)]
@@ -473,7 +474,7 @@ def plot_accuracy_metrics(metrics_data, output_path, title, xvals, xlabel):
     accuracy_data = []
     for entry in metrics_data:
         accuracy_data.append(
-            {"Benign-Malicious Acc": entry.get("benign_malicious_accuracy", 0)}
+            {"Benign-Malicious Acc": entry.get("accuracy", 0)}
         )
     plot_major_metrics_together(
         accuracy_data, output_path, title=title, xvals=xvals, xlabel=xlabel
@@ -718,13 +719,13 @@ def print_summary_section(lines, title, metrics_data):
         f"Accuracy:             {metrics_data.get('accuracy', 0):.4f}"
     )
     lines.append(
-        f"Malware F1:           {metrics_data.get('malware_f1', 0):.4f}"
+        f"F1:                   {metrics_data.get('malware_f1', 0):.4f}"
     )
     lines.append(
-        f"Malware FPR:          {metrics_data.get('malware_fpr', 0):.4f}"
+        f"FPR:                  {metrics_data.get('malware_fpr', 0):.4f}"
     )
     lines.append(
-        f"Malware FNR:          {metrics_data.get('malware_fnr', 0):.4f}"
+        f"FNR:                  {metrics_data.get('malware_fnr', 0):.4f}"
     )
     lines.append(
         f"Macro F1:             {metrics_data.get('macro_f1', 0):.4f}"
@@ -743,10 +744,10 @@ def print_per_class_table(lines, title, cum_metrics_per_class):
     lines.append(
         f"{'Class':<15} {'TP':>8} {'TN':>8} {'FP':>8} {'FN':>8} {'Acc':>8} {'Prec':>8} {'Rec':>8} {'F1':>8}"
     )
-    for cls, m in cum_metrics_per_class.items():
-        lines.append(
-            f"{cls:<15} {m.get('TP', 0):8d} {m.get('TN', 0):8d} {m.get('FP', 0):8d} {m.get('FN', 0):8d} {m.get('accuracy', 0.0):8.4f} {m.get('precision', 0.0):8.4f} {m.get('recall', 0.0):8.4f} {m.get('f1', 0.0):8.4f}"
-        )
+    m = cum_metrics_per_class['Malicious']
+    lines.append(
+        f"{'Malicious':<15} {m.get('TP', 0):8d} {m.get('TN', 0):8d} {m.get('FP', 0):8d} {m.get('FN', 0):8d} {m.get('accuracy', 0.0):8.4f} {m.get('precision', 0.0):8.4f} {m.get('recall', 0.0):8.4f} {m.get('f1', 0.0):8.4f}"
+    )
 
 
 def ensure_plot_subdirs(base_dir):
@@ -957,9 +958,9 @@ def main():
         os.path.join(
             get_dir("validation" if has_validation_data else "training"),
             "per_batch",
-            f"malware_metrics_batch_{'validation' if has_validation_data else 'training'}.png",
+            f"malicious_metrics_batch_{'validation' if has_validation_data else 'training'}.png",
         ),
-        f"Malware metrics (per-batch)\n({'Validation' if has_validation_data else 'Training'})",
+        f"Malicious metrics (per-batch)\n({'Validation' if has_validation_data else 'Training'})",
         stepping_sizes,
         "Batch",
     )
@@ -968,9 +969,9 @@ def main():
         os.path.join(
             get_dir("validation" if has_validation_data else "training"),
             "aggregated",
-            f"malware_metrics_aggregated_{'validation' if has_validation_data else 'training'}.png",
+            f"malicious_metrics_aggregated_{'validation' if has_validation_data else 'training'}.png",
         ),
-        f"Malware metrics (Aggregated)\n({'Validation' if has_validation_data else 'Training'})",
+        f"Malicious metrics (Aggregated)\n({'Validation' if has_validation_data else 'Training'})",
         xvals=cumulative_sizes,
         xlabel="Aggregated samples",
     )
@@ -1017,8 +1018,8 @@ def main():
         ensure_dir(folder)
         plot_malware_metrics(
             series_multi_k,
-            os.path.join(folder, f"malware_metrics_last{k}_{label}.png"),
-            f"Malware metrics (last-{k})\n({label})",
+            os.path.join(folder, f"malicious_metrics_last{k}_{label}.png"),
+            f"Malicious metrics (last-{k})\n({label})",
             xvals,
             "Batch",
         )
@@ -1080,9 +1081,9 @@ def main():
             os.path.join(
                 get_dir("training"),
                 "per_batch",
-                "malware_metrics_batch_training.png",
+                "malicious_metrics_batch_training.png",
             ),
-            "Malware metrics (per-batch)\n(Training)",
+            "Malicious metrics (per-batch)\n(Training)",
             stepping_training_sizes,
             "Batch",
         )
@@ -1091,9 +1092,9 @@ def main():
             os.path.join(
                 get_dir("training"),
                 "aggregated",
-                "malware_metrics_aggregated_training.png",
+                "malicious_metrics_aggregated_training.png",
             ),
-            "Malware metrics (Aggregated)\n(Training)",
+            "Malicious metrics (Aggregated)\n(Training)",
             xvals=cumulative_training_sizes,
             xlabel="Aggregated samples",
         )

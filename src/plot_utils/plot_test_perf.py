@@ -223,8 +223,12 @@ def plot_counts_series(
     n = len(series_of_dicts)
     x_positions = list(range(n))
     plt.figure(figsize=(9, 4))
+
+    # when there's just one batch/point, show a marker so the point is visible
+    marker = "o" if n == 1 else None
     for cls in classes:
-        plt.plot(x_positions, values_per_class[cls], label=cls, linewidth=1)
+        plt.plot(x_positions, values_per_class[cls], label=cls, linewidth=1, marker=marker)
+
     if xlabels is None:
         labels = [str(i) for i in range(n)]
     else:
@@ -362,7 +366,7 @@ def main():
         for m in cumul_multi_series
     ]
     out_malware = os.path.join(
-        testing_dir, "malware_metrics_aggregated_testing.png"
+        testing_dir, "malicious_metrics_aggregated_testing.png"
     )
     xvals = (
         cumulative_total_flows
@@ -372,7 +376,7 @@ def main():
     plot_major_metrics_together(
         malware_metrics_data,
         out_malware,
-        title="Malware metrics (Aggregated)\n(testing set: so-far)",
+        title="Malicious metrics (Aggregated)\n(testing set: so-far)",
         xvals=xvals,
         xlabel="Total flows seen",
     )
@@ -383,11 +387,11 @@ def main():
         {"FPR": m.get("malware_fpr", 0), "FNR": m.get("malware_fnr", 0)}
         for m in cumul_multi_series
     ]
-    out_fprfnr = os.path.join(testing_dir, "malware_fpr_fnr_over_time.png")
+    out_fprfnr = os.path.join(testing_dir, "malicious_fpr_fnr_over_time.png")
     plot_major_metrics_together(
         fpr_fnr_series,
         out_fprfnr,
-        title="Malware FPR & FNR over time\n(testing snapshots)",
+        title="Malicious FPR & FNR over time\n(testing snapshots)",
         xvals=xvals,
         xlabel="Total flows seen",
     )
@@ -433,30 +437,34 @@ def main():
     # print("[INFO] Writing summary...")
     lines = []
     lines.append("\n=== Main final metrics (Aggregated so-far) ===")
-    lines.append(f"Accuracy:             {last_multi.get('accuracy', 0):.4f}")
     lines.append(
-        f"Malware F1:           {last_multi.get('malware_f1', 0):.4f}"
+        f"Accuracy:                         {last_multi.get('accuracy', 0):.4f}"
     )
     lines.append(
-        f"Malware FPR:          {last_multi.get('malware_fpr', 0):.4f}"
+        f"F1:                               {last_multi.get('malware_f1', 0):.4f}"
     )
     lines.append(
-        f"Malware FNR:          {last_multi.get('malware_fnr', 0):.4f}"
+        f"FPR:                              {last_multi.get('malware_fpr', 0):.4f}"
     )
-    lines.append(f"Macro F1:             {last_multi.get('macro_f1', 0):.4f}")
     lines.append(
-        f"Precision:            {last_binary.get('precision', 0):.4f}"
+        f"FNR:                              {last_multi.get('malware_fnr', 0):.4f}"
     )
-    lines.append(f"Recall:               {last_binary.get('recall', 0):.4f}")
+    lines.append(
+        f"Macro F1:                         {last_multi.get('macro_f1', 0):.4f}"
+    )
+    lines.append(
+        f"Precision:                        {last_binary.get('precision', 0):.4f}"
+    )
+    lines.append(f"Recall:                  {last_binary.get('recall', 0):.4f}")
 
     lines.append("\n=== Per-class metrics (final snapshot) ===")
     lines.append(
-        f"{'Class':<15} {'TP':>8} {'TN':>8} {'FP':>8} {'FN':>8} {'Prec':>8} {'Rec':>8} {'F1':>8}"
+        f"{'Class':<15} {'TP':>8} {'TN':>8} {'FP':>8} {'FN':>8} {'Prec':>8} {'Rec':>8} {'F1':>8} Skibidi "
     )
-    for cls, m in final_per_class_table.items():
-        lines.append(
-            f"{cls:<15} {m.get('TP', 0):8d} {m.get('TN', 0):8d} {m.get('FP', 0):8d} {m.get('FN', 0):8d} {m.get('precision', 0.0):8.4f} {m.get('recall', 0.0):8.4f} {m.get('f1', 0.0):8.4f}"
-        )
+    m = final_per_class_table['Malicious']
+    lines.append(
+        f"{'Malicious':<15} {m.get('TP', 0):8d} {m.get('TN', 0):8d} {m.get('FP', 0):8d} {m.get('FN', 0):8d} {m.get('precision', 0.0):8.4f} {m.get('recall', 0.0):8.4f} {m.get('f1', 0.0):8.4f}"
+    )
 
     lines.append(f"\nSummary for Experiment {args.exp}:")
     lines.append(f"Total test lines processed: {len(entries)}")
