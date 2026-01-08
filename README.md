@@ -22,7 +22,7 @@ conda create -n slips-ml-pipeline python=3.10 pip -y
 conda activate slips-ml-pipeline
 pip install -r requirements.txt
 ```
-
+Feel free to use simpler environments, like `venv` instead of conda
 If you will fetch large Zeek datasets via Git, install Git LFS:
 
 ```bash
@@ -66,7 +66,7 @@ Key modules:
 ## Usage (brief)
 
 1. Prepare the config directory or `config.yaml` (a default commented config is expected to exist).
-2. Ensure `root` points to your dataset root with subfolders (e.g. `001/data/conn.log.labeled`).
+2. Ensure `root` points to your dataset root with subfolders (e.g. `root/001/data/conn.log.labeled`).
 3. Run `python run.py /path/to/config`.
 4. Inspect experiment outputs in `experiments/<experiment_name>`.
 
