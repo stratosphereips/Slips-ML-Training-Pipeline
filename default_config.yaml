@@ -1,4 +1,7 @@
 experiment_name: default_experiment
+
+# root of the dataset folder
+# should contain subfolders with ID in the names (e.g., 001, 002, ...)
 root:
 seed: 1111
 validation_split: 0.1
@@ -14,7 +17,6 @@ plotting_pths:
 
 paths:
   experiment_dir: ./experiments
-  preprocessing_dir_name: preprocessing
 
 dataset_loader:
   data_subdir: data
@@ -70,6 +72,7 @@ commands:
       # in sequence, drain all of the datasets to the end,
       # then begin with a new one
       datasets: ["001", "008", "010"]
+
 
   - name: "test_all"
     command: "test"
