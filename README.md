@@ -65,9 +65,9 @@ Key modules:
 
 ## Usage (brief)
 
-1. Prepare the config directory or `config.yaml` (a default commented config is expected to exist).
+1. Prepare the `default_config.yaml` or modify it as you wish.
 2. Ensure `root` points to your dataset root with subfolders (e.g. `root/001/data/conn.log.labeled`).
-3. Run `python run.py /path/to/config`.
+3. Run `python run.py /path/to/config`. If you don't provide config, a `default_config.yaml` is used
 4. Inspect experiment outputs in `experiments/<experiment_name>`.
 
 ---
@@ -75,13 +75,61 @@ Key modules:
 ## Output
 
 #### Training example output
+```bash
+=== VALIDATION Multi-class (Aggregated) ===
+Accuracy:             0.9838
+Malware F1:           0.9882
+Malware FPR:          0.0345
+Malware FNR:          0.0079
+Macro F1:             0.9811
+Precision:            0.9843
+Recall:               0.9921
+MCC:                  0.9622
 
+=== TRAINING Multi-class (Aggregated) ===
+Accuracy:             0.9758
+Malware F1:           0.9828
+Malware FPR:          0.0524
+Malware FNR:          0.0121
+Macro F1:             0.9710
+Precision:            0.9776
+Recall:               0.9879
+MCC:                  0.9422
 
+=== Per-class metrics (Aggregated) - VALIDATION ===
+Class                 TP       TN       FP       FN      Acc     Prec      Rec       F1
+Benign               336      754        6       12   0.9838   0.9825   0.9655   0.9739
+Malicious            754      336       12        6   0.9838   0.9843   0.9921   0.9882
+
+=== Per-class metrics (Aggregated) - TRAINING ===
+Class                 TP       TN       FP       FN      Acc     Prec      Rec       F1
+Benign              2842     6866       84      157   0.9758   0.9713   0.9476   0.9593
+Malicious           6866     2842      157       84   0.9758   0.9776   0.9879   0.9828
+```
 #### Testing example output
+```bash
+[INFO] Plotting malware metrics (FPR, FNR, F1, Accuracy) over snapshots...
+[INFO] Saving FPR/FNR-only plot...
+[INFO] Plotting predicted vs seen counts (per-snapshot) for Malicious & Benign...
+[INFO] Plotting final confusion matrix (final snapshot)...
 
+=== Main final metrics (Aggregated so-far) ===
+Accuracy:             0.9040
+Malware F1:           0.9472
+Malware FPR:          0.2532
+Malware FNR:          0.0865
+Macro F1:             0.7089
+Precision:            0.9835
+Recall:               0.9135
+
+=== Per-class metrics (final snapshot) ===
+Class                 TP       TN       FP       FN     Prec      Rec       F1
+Malicious          59104     2929      993     5598   0.9835   0.9135   0.9472
+Benign              2929    59104     5598      993   0.3435   0.7468   0.4706
+```
 ---
 
-## Testing
+##  Code Testing
 
 Run unit tests:
 
