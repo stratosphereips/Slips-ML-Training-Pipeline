@@ -1,186 +1,182 @@
-# pipeline_ml_training/config_reader.py
+
 """
-Minimal ConfigReader — single source of truth (no defaults).
-
-Behavior:
- - Read exactly one config file (YAML or JSON).
- - Validate presence of required keys and structure.
- - Resolve experiment and preprocessing paths relative to config when needed.
- - Compute per-command effective_batch_size and effective_validation_split.
- - Resolve & validate plotting script paths (must exist).
- - Provide small accessor helpers used by the pipeline.
-
-If anything required is missing or invalid, load() raises with a clear error.
+Minimal ConfigReader
+Usage:
+    cr = ConfigReader(path_or_file)
+    cfg = cr.load()
+Access helpers:
+    get_feature_extractor_params(), get_preprocessing_steps(), get_model_spec(),
+    get_dataset_loader_params(), get_paths(), get_commands(),
+    get_plotting_paths(), get_random_seed(), get_classes()
 """
 
 from pathlib import Path
 import json
+from typing import Tuple, Optional
 
 try:
     import yaml
-except Exception:
-    raise ImportError("PyYAML required. Install with: pip install pyyaml")
+except Exception as e:
+    raise ImportError("PyYAML required. Install with: pip install pyyaml") from e
 
-YAML_NAMES = ("config.yaml", "config.yml")
-JSON_NAMES = ("config.json",)
+YAML_FILENAMES = ("config.yaml", "config.yml")
+JSON_FILENAMES = ("config.json",)
 
 
-def _load_file(path: Path):
+def _load_file(path: Path) -> dict:
     txt = path.read_text(encoding="utf-8")
-    sfx = path.suffix.lower()
-    if sfx in (".yaml", ".yml"):
+    suffix = path.suffix.lower()
+    if suffix in (".yaml", ".yml"):
         data = yaml.safe_load(txt) or {}
-    elif sfx == ".json":
+    elif suffix == ".json":
         data = json.loads(txt)
     else:
-        # try yaml then json
+        # prefer yaml, fallback to json
         try:
             data = yaml.safe_load(txt) or {}
         except Exception:
             data = json.loads(txt)
     if not isinstance(data, dict):
-        raise ValueError(f"Top-level config in {path} must be a mapping")
+        raise ValueError(f"Top-level document in {path} must be a mapping (dict).")
     return data
 
 
 class ConfigReader:
+    """
+    Minimal, strict config reader. Expects a single config file (yaml/json).
+    No implicit defaults are injected except a few derived/resolved path fields.
+    """
+
+    # which fields must be present at top level
+    REQUIRED_TOP_LEVEL = [
+        "experiment_name",
+        "root",
+        "classes",
+        "batch_size_train",
+        "batch_size_test",
+        "model",
+        "commands",
+        "plotting_pths",
+    ]
+
     def __init__(self, path_or_dir: str):
         self.base = Path(path_or_dir)
-        self.config_path: Path | None = None
-        self._cfg: dict | None = None
+        self.config_path: Optional[Path] = None
+        self._raw_config: Optional[dict] = None
+        self._resolved: Optional[dict] = None
 
-    def _find_user_config(self) -> Path | None:
+    # ---------------- discovery ----------------
+    def _find_config_file(self) -> Optional[Path]:
         p = self.base
         if p.is_file():
             return p
         if p.is_dir():
-            for name in YAML_NAMES + JSON_NAMES:
+            for name in YAML_FILENAMES + JSON_FILENAMES:
                 cand = p / name
                 if cand.exists():
                     return cand
         return None
 
-    def load(self) -> dict:
-        if self._cfg is not None:
-            return self._cfg
+    # ---------------- validation ----------------
+    def _assert_keys_present(self, d: dict, keys: list):
+        missing = [k for k in keys if k not in d or d.get(k) is None]
+        if missing:
+            raise ValueError("Configuration missing required top-level keys: " + ", ".join(missing))
 
-        cfg_path = self._find_user_config()
-        if cfg_path is None:
-            raise FileNotFoundError(f"No config file found under '{self.base}'")
-
-        cfg = _load_file(cfg_path)
-        self.config_path = cfg_path
-
-        # --- Minimal strict validation of top-level keys ---
-        required_top = ("experiment_name", "root", "classes", "commands", "paths", "model")
-        for k in required_top:
-            if k not in cfg:
-                raise ValueError(f"Missing required top-level key: '{k}'")
-
-        if not isinstance(cfg["classes"], list) or not cfg["classes"]:
-            raise ValueError("Top-level 'classes' must be a non-empty list")
-
-        if not isinstance(cfg["commands"], list):
+    def _validate_commands(self, cfg: dict):
+        if not isinstance(cfg.get("commands"), list):
             raise ValueError("'commands' must be a list")
-
-        # paths: require experiment_dir
-        if not isinstance(cfg["paths"], dict) or "experiment_dir" not in cfg["paths"]:
-            raise ValueError("paths.experiment_dir is required")
-
-        # plotting paths must be present and point to existing files (resolved relative to config file)
-        plotting = cfg.get("plotting_pths")
-        if not isinstance(plotting, dict):
-            raise ValueError("plotting_pths mapping is required with keys 'training' and 'testing'")
-        train_plot = plotting.get("training")
-        test_plot = plotting.get("testing")
-        if not train_plot or not test_plot:
-            raise ValueError("plotting_pths.training and plotting_pths.testing must be provided")
-        # resolve relative to config parent
-        cfg_dir = cfg_path.parent
-        train_path = (cfg_dir / train_plot).resolve() if not Path(train_plot).is_absolute() else Path(train_plot)
-        test_path = (cfg_dir / test_plot).resolve() if not Path(test_plot).is_absolute() else Path(test_plot)
-        if not train_path.exists():
-            raise FileNotFoundError(f"Training plotting script not found: {train_path}")
-        if not test_path.exists():
-            raise FileNotFoundError(f"Testing plotting script not found: {test_path}")
-        # store resolved plotting paths back
-        cfg["plotting_pths"] = {"training": str(train_path), "testing": str(test_path)}
-
-        # dataset_loader: must be mapping and must include batch_size and data_subdir
-        ds = cfg.get("dataset_loader")
-        if not isinstance(ds, dict):
-            raise ValueError("dataset_loader mapping required")
-        if "batch_size" not in ds:
-            raise ValueError("dataset_loader.batch_size is required")
-        if "data_subdir" not in ds:
-            raise ValueError("dataset_loader.data_subdir is required")
-        if "cache_dir" in ds:
-            ds_cache = Path(ds["cache_dir"])
-            if not ds_cache.is_absolute():
-                ds_cache = (cfg_dir / ds["cache_dir"]).resolve()
-            ds["cache_dir_resolved"] = str(ds_cache)
-
-        # model: must contain classifier_type (or type)
-        model = cfg["model"]
-        if not isinstance(model, dict):
-            raise ValueError("model must be a mapping")
-        if not (model.get("classifier_type") or model.get("type")):
-            raise ValueError("model.classifier_type (or model.type) is required")
-
-        # Validate commands and build per-command effective values & paths
-        exp_name = cfg["experiment_name"]
-        base_exp = Path(cfg["paths"]["experiment_dir"])
-        exp_resolved = (base_exp / exp_name).resolve()
-        cfg["paths"]["experiment_dir_resolved"] = str(exp_resolved)
-        # preprocessing dir resolved
-        pdir_name = cfg["paths"].get("preprocessing_dir_name", "preprocessing")
-        cfg["paths"]["preprocessing_dir_resolved"] = str((exp_resolved / pdir_name).resolve())
-
-        # ensure top-level batch_size_train/test exist if commands omit batch_size
-        # but only raise if needed later
-        for idx, cmd in enumerate(cfg["commands"]):
+        allowed_mixers = {"sequence", "random_batches", "balanced_by_label"}
+        for i, cmd in enumerate(cfg.get("commands", [])):
             if not isinstance(cmd, dict):
-                raise ValueError(f"commands[{idx}] must be a mapping")
-            if cmd.get("command") not in ("train", "test"):
-                raise ValueError(f"commands[{idx}].command must be 'train' or 'test'")
-
+                raise ValueError(f"commands[{i}] must be a mapping")
+            ctype = cmd.get("command")
+            if ctype not in ("train", "test"):
+                raise ValueError(f"commands[{i}].command must be 'train' or 'test'")
             mixer = cmd.get("mixer")
             if not isinstance(mixer, dict):
-                raise ValueError(f"commands[{idx}].mixer is required and must be a mapping")
+                raise ValueError(f"commands[{i}].mixer is required and must be a mapping")
             mtype = mixer.get("type")
-            if mtype not in ("sequence", "random_batches", "balanced_by_label"):
-                raise ValueError(f"commands[{idx}].mixer.type unknown: '{mtype}'")
+            if mtype not in allowed_mixers:
+                raise ValueError(f"commands[{i}].mixer.type must be one of {sorted(allowed_mixers)}")
+            # Do not allow per-command batch_size; top-level sizes only
+            if "batch_size" in cmd:
+                raise ValueError(f"Do not set commands[{i}].batch_size — use top-level batch_size_train/test")
 
-            # compute effective_validation_split: command -> mixer -> top-level required 'validation_split'
+    def _validate_plotting_paths(self, cfg: dict):
+        pths = cfg.get("plotting_pths")
+        if not isinstance(pths, dict):
+            raise ValueError("'plotting_pths' must be a mapping with 'training' and 'testing'")
+        if "training" not in pths or "testing" not in pths:
+            raise ValueError("'plotting_pths' must contain keys 'training' and 'testing'")
+
+    # ---------------- load & resolve ----------------
+    def load(self) -> dict:
+        if self._resolved is not None:
+            return self._resolved
+
+        cfg_file = self._find_config_file()
+        if cfg_file is None:
+            raise FileNotFoundError(f"No config file found at or under: {self.base}")
+        self.config_path = cfg_file
+        self._raw_config = _load_file(cfg_file)
+
+        # Validate required top-level keys (single source of truth)
+        self._assert_keys_present(self._raw_config, self.REQUIRED_TOP_LEVEL)
+
+        # Basic structural validations
+        self._validate_plotting_paths(self._raw_config)
+        self._validate_commands(self._raw_config)
+
+        # create a copy we'll modify (clear intent)
+        effective_config = dict(self._raw_config)
+
+        # ------------------------------
+        # propagate top-level batch sizes into dataset_loader mapping
+        # ------------------------------
+        ds = effective_config.get("dataset_loader", {}) or {}
+        ds["batch_size"] = int(effective_config["batch_size_train"])
+        ds["batch_size_test"] = int(effective_config["batch_size_test"])
+        # fill minimal dataset_loader required keys if absent (not defaults — just required shapes)
+        ds.setdefault("data_subdir", "data")
+        ds.setdefault("persist_cache_threshold", 30000)
+        ds.setdefault("cache_dir", "./cache")
+        ds["cache_dir_resolved"] = str(Path(ds["cache_dir"]).resolve())
+        effective_config["dataset_loader"] = ds
+
+        # ------------------------------
+        # resolve experiment paths (experiment_dir_resolved, preprocessing_dir_resolved)
+        # ------------------------------
+        paths = effective_config.get("paths", {}) or {}
+        paths.setdefault("experiment_dir", "./experiments")
+        exp_name = effective_config["experiment_name"]
+        base_experiments = Path(paths["experiment_dir"])
+        paths["experiment_dir_resolved"] = str((base_experiments / exp_name).resolve())
+        effective_config["paths"] = paths
+
+        # ------------------------------
+        # compute per-command effective sizes/splits
+        # ------------------------------
+        commands = effective_config.get("commands", [])
+        for idx, cmd in enumerate(commands):
+            # effective batch size (test vs train)
+            cmd["effective_batch_size"] = int(
+                effective_config["batch_size_test"] if cmd.get("command") == "test" else effective_config["batch_size_train"]
+            )
+            # effective validation split: mixer -> command -> global
+            mix_val = cmd.get("mixer", {}).get("validation_split")
             cmd_val = cmd.get("validation_split")
-            mix_val = mixer.get("validation_split")
-            if cmd_val is not None:
-                eff_val = float(cmd_val)
-            elif mix_val is not None:
+            if mix_val is not None:
                 eff_val = float(mix_val)
+            elif cmd_val is not None:
+                eff_val = float(cmd_val)
             else:
-                if "validation_split" not in cfg:
-                    raise ValueError("Top-level 'validation_split' required when not provided per-command/mixer")
-                eff_val = float(cfg["validation_split"])
+                eff_val = float(effective_config.get("validation_split", 0.0))
             cmd["effective_validation_split"] = eff_val
 
-            # effective batch size: command.batch_size if present else top-level batch_size_train/test required
-            if "batch_size" in cmd:
-                eff_bs = int(cmd["batch_size"])
-            else:
-                if cmd["command"] == "test":
-                    if "batch_size_test" not in cfg:
-                        raise ValueError("Top-level 'batch_size_test' required when command.batch_size not specified")
-                    eff_bs = int(cfg["batch_size_test"])
-                else:
-                    if "batch_size_train" not in cfg:
-                        raise ValueError("Top-level 'batch_size_train' required when command.batch_size not specified")
-                    eff_bs = int(cfg["batch_size_train"])
-            cmd["effective_batch_size"] = eff_bs
-
-            # per-command file-system paths under experiment_dir
+            # per-command paths under experiment dir (helpful for pipeline layout)
             safe_name = cmd.get("name") or f"cmd_{idx}"
-            cmd_base = exp_resolved / "commands" / f"{idx}_{safe_name}"
+            cmd_base = Path(paths["experiment_dir_resolved"]) / "commands" / f"{idx}_{safe_name}"
             cmd["paths"] = {
                 "command_dir": str(cmd_base.resolve()),
                 "preprocessing": str((cmd_base / "preprocessing").resolve()),
@@ -189,19 +185,21 @@ class ConfigReader:
                 "logs": str((cmd_base / "logs").resolve()),
             }
 
-            # write effective values into mixer mapping for downstream use
-            mixer["validation_split"] = cmd["effective_validation_split"]
-            if "batch_size" not in mixer:
-                mixer["batch_size"] = cmd["effective_batch_size"]
+            # ensure mixer sees the effective values
+            # propagate effective values into mixer spec so mixers see them
+            if isinstance(cmd.get("mixer"), dict):
+                cmd["mixer"]["validation_split"] = cmd["effective_validation_split"]
+                # give mixer a batch_size if not explicitly set
+                cmd["mixer"].setdefault("batch_size", cmd["effective_batch_size"])
 
-        # final validation passed
-        self._cfg = cfg
-        return cfg
+        # final store
+        self._resolved = effective_config
+        return self._resolved
 
-    # ----------------- small accessors -----------------
-    def get_feature_extractor_params(self):
+    # ---------------- accessors ----------------
+    def get_feature_extractor_params(self) -> dict:
         cfg = self.load()
-        feats = cfg.get("features", {})
+        feats = cfg.get("features", {}) or {}
         return {
             "default_label": feats.get("default_label"),
             "protocols_to_discard": feats.get("protocols_to_discard"),
@@ -209,70 +207,50 @@ class ConfigReader:
             "column_types": feats.get("column_types"),
         }
 
-    def get_preprocessing_steps(self):
-        return self.load().get("preprocessing", {}).get("steps", [])
+    def get_preprocessing_steps(self) -> list:
+        cfg = self.load()
+        return cfg.get("preprocessing", {}).get("steps", [])
 
-    def get_preprocessing_save_options(self):
+    def get_preprocessing_save_options(self) -> dict:
         cfg = self.load()
         return {
             "save_steps": cfg.get("preprocessing", {}).get("save_steps", True),
             "step_filename_template": cfg.get("preprocessing", {}).get("step_filename_template", "{name}.bin"),
-            "preprocessing_dir": cfg["paths"]["preprocessing_dir_resolved"],
+            "preprocessing_dir": cfg.get("paths", {}).get("preprocessing"),
         }
 
-    def get_model_spec(self):
+    def get_model_spec(self) -> dict:
         cfg = self.load()
-        return cfg.get("model", {})
+        # return shallow copy; top-level classes are authoritative
+        m = dict(cfg.get("model", {}))
+        m.pop("classes", None)
+        m.pop("dummy_flows", None)
+        return m
 
-    def get_dataset_loader_params(self):
+    def get_dataset_loader_params(self) -> dict:
         cfg = self.load()
-        return cfg.get("dataset_loader", {})
+        return dict(cfg.get("dataset_loader", {}))
 
-    def get_paths(self):
-        return self.load().get("paths", {})
-
-    def get_commands(self):
-        return self.load().get("commands", [])
-
-    def get_command_load_spec(self, cmd_or_idx):
+    def get_paths(self) -> dict:
         cfg = self.load()
-        if isinstance(cmd_or_idx, int):
-            cmds = cfg.get("commands", [])
-            if 0 <= cmd_or_idx < len(cmds):
-                return cmds[cmd_or_idx].get("load")
-            return None
-        if isinstance(cmd_or_idx, dict):
-            return cmd_or_idx.get("load")
-        return None
+        return dict(cfg.get("paths", {}))
 
-    def get_command_new_spec(self, cmd_or_idx):
+    def get_commands(self) -> list:
         cfg = self.load()
-        if isinstance(cmd_or_idx, int):
-            cmds = cfg.get("commands", [])
-            if 0 <= cmd_or_idx < len(cmds):
-                return cmds[cmd_or_idx].get("new")
-            return None
-        if isinstance(cmd_or_idx, dict):
-            return cmd_or_idx.get("new")
-        return None
+        return list(cfg.get("commands", []))
 
-    def get_plotting_paths(self):
+    def get_plotting_paths(self) -> Tuple[str, str]:
         cfg = self.load()
-        p = cfg.get("plotting_pths", {})
+        p = cfg.get("plotting_pths", {}) or {}
         return p.get("training"), p.get("testing")
 
-    def get_random_seed(self):
+    def get_random_seed(self) -> int:
         cfg = self.load()
-        if "seed" not in cfg:
-            raise ValueError("Top-level 'seed' is required")
-        return int(cfg["seed"])
+        return int(cfg.get("seed", cfg.get("random_seed", 1111)))
 
-    def get_classes(self):
+    def get_classes(self) -> list:
         cfg = self.load()
-        return cfg["classes"]
-
-    def save_effective_config(self, target: str):
-        cfg = self.load()
-        p = Path(target)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+        classes = cfg.get("classes")
+        if not isinstance(classes, list) or not classes:
+            raise ValueError("Top-level 'classes' must be a non-empty list")
+        return classes

@@ -89,13 +89,7 @@ class Logger:
         relevant_labels = self.relevant_labels
 
         # train + validation
-        if (
-            y_pred_val is not None
-            and y_gt_val is not None
-            and y_pred_train is not None
-            and y_gt_train is not None
-            and not np.array_equal(y_gt_train, y_gt_val)
-        ):
+        if y_pred_val is not None and y_gt_val is not None and len(y_gt_val) > 0:
             y_gt_val_filt, y_pred_val_filt = self._filter_labels(
                 y_gt_val, y_pred_val, relevant_labels
             )
