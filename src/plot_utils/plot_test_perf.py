@@ -459,7 +459,7 @@ def main():
 
     lines.append("\n=== Per-class metrics (final snapshot) ===")
     lines.append(
-        f"{'Class':<15} {'TP':>8} {'TN':>8} {'FP':>8} {'FN':>8} {'Prec':>8} {'Rec':>8} {'F1':>8} Skibidi "
+        f"{'Class':<15} {'TP':>8} {'TN':>8} {'FP':>8} {'FN':>8} {'Prec':>8} {'Rec':>8} {'F1':>8} "
     )
     m = final_per_class_table['Malicious']
     lines.append(
