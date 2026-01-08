@@ -16,7 +16,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pre-commit pytest
+          pip install pre-commit pytest numpy pandas
 
       - name: Run pre-commit
         run: pre-commit run --all-files
