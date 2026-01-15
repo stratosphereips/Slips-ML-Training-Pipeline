@@ -239,7 +239,9 @@ def get_mixer_class(mixer_type: str):
     mapping = {
         "sequence": "SequenceMixer",
         "random": "RandomBatchesMixer",
+        "random_batches": "RandomBatchesMixer",
         "balanced": "BalancedByLabelMixer",
+        "balanced_by_label": "BalancedByLabelMixer",
     }
     if mixer_type in mapping:
         name = mapping[mixer_type]
