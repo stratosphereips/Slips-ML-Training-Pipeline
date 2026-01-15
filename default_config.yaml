@@ -2,7 +2,7 @@ experiment_name: default_experiment
 
 # root of the dataset folder
 # should contain subfolders with ID in the names (e.g., 001, 002, ...)
-root:
+root: ../../../dataset-private
 seed: 1111
 validation_split: 0.1
 batch_size_train: 500
@@ -55,14 +55,18 @@ preprocessing:
   step_filename_template: "{name}.bin"
 
 model:
-  wrapper: SKLearnClassifierWrapper
-  classifier_type: SGDClassifier
+  wrapper: RiverClassifierWrapper
+  classifier_type: ADWINBoostingClassifier
   classifier_params:
-    loss: hinge
-    penalty: l2
-  save_name: classifier.bin
-  classes: ["Benign", "Malicious"]
-  dummy_flows: {}
+    n_models: 20
+    model:
+      type: HoeffdingAdaptiveTreeClassifier
+      params:
+        max_depth: 12
+        grace_period: 150
+        max_size: 0
+        delta: 1e-6
+  save_name: classifier_adwinboost.bin
 
 commands:
   - name: "train_seq" # command name
@@ -71,7 +75,7 @@ commands:
       type: "sequence"
       # in sequence, drain all of the datasets to the end,
       # then begin with a new one
-      datasets: ["001", "008", "010"]
+      datasets: ["001", "008", "009", "010", "011", "012", "013", "014", "015", "016", "017", "022", "023", "024", "027", "028", "029", "032", "033", "034"]
 
 
   - name: "test_all"
@@ -80,4 +84,4 @@ commands:
       type: "sequence"
       # in sequence, drain all of the datasets to the end,
       # then begin with a new one  BUT here TEST ALL
-      datasets: ["001", "008", "009", "010"]
+      datasets: ["001", "008", "009", "010", "011", "012", "013", "014", "015", "016", "017", "018", "019", "020", "021", "025", "026", "030", "031", "035", "036", "037"]
