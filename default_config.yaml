@@ -65,7 +65,7 @@ model:
         max_depth: 12
         grace_period: 150
         max_size: 0
-        delta: 1e-6
+        delta: 1.0e-6
   save_name: classifier_adwinboost.bin
 
 commands:
