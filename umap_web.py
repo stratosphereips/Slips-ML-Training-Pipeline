@@ -87,8 +87,19 @@ class UMAPService:
         self.last_summary = None
 
         ds_params = self.cfg_reader.get_dataset_loader_params()
+        root = self.cfg.get("root")
+        if root is None:
+            raise RuntimeError("Config missing 'root' path")
+        root_path = Path(root)
+        if not root_path.is_absolute():
+            if self.cfg_reader.config_path:
+                base = self.cfg_reader.config_path.resolve().parent
+            else:
+                base = ROOT
+            root_path = (base / root_path).resolve()
+        self.root_path = root_path
         self.loaders = find_and_load_datasets(
-            root_dir=self.cfg.get("root"),
+            root_dir=str(root_path),
             batch_size=int(ds_params.get("batch_size", 1000)),
             prefix_regex=ds_params.get("prefix_regex", r"^\d{3}"),
             data_subdir=ds_params.get("data_subdir", "data"),
@@ -215,6 +226,8 @@ class UMAPService:
         label_order = ["Benign", "Malicious"]
 
         fig, ax = plt.subplots(figsize=(11, 9.5))
+        # Reserve right margin so legends do not overlap plotted points.
+        fig.subplots_adjust(right=0.74)
         fig.patch.set_facecolor("white")
         ax.set_facecolor("white")
         for ds_name in selected:
@@ -258,7 +271,9 @@ class UMAPService:
         legend1 = ax.legend(
             handles=dataset_handles,
             title="Datasets",
-            loc="upper right",
+            loc="upper left",
+            bbox_to_anchor=(1.01, 1.0),
+            borderaxespad=0.0,
             fontsize=8,
             title_fontsize=9,
         )
@@ -266,7 +281,9 @@ class UMAPService:
         ax.legend(
             handles=label_handles,
             title="Labels",
-            loc="lower right",
+            loc="upper left",
+            bbox_to_anchor=(1.01, 0.62),
+            borderaxespad=0.0,
             fontsize=8,
             title_fontsize=9,
         )
@@ -426,6 +443,14 @@ class UMAPService:
         if self.last_png is None:
             raise RuntimeError("No UMAP image has been generated yet.")
 
+        png_bytes = self.last_png
+        if self.last_summary:
+            try:
+                png_bytes = self._annotate_png(png_bytes, self.last_summary)
+            except Exception:
+                # fall back to raw image on annotation failure
+                png_bytes = self.last_png
+
         safe_name = None
         if name:
             cleaned = "".join(c for c in name if c.isalnum() or c in ("_", "-", "."))
@@ -443,8 +468,76 @@ class UMAPService:
             safe_name += ".png"
 
         out_path = self.output_dir / safe_name
-        out_path.write_bytes(self.last_png)
+        out_path.write_bytes(png_bytes)
         return str(out_path)
+
+    def _annotate_png(self, png_bytes, summary):
+        import matplotlib.pyplot as plt
+        import matplotlib.image as mpimg
+
+        img = mpimg.imread(io.BytesIO(png_bytes))
+        if img is None:
+            return png_bytes
+
+        h, w = img.shape[:2]
+        panel_w = 320
+        dpi = 100
+        fig_w = (w + panel_w) / dpi
+        fig_h = h / dpi
+
+        fig = plt.figure(figsize=(fig_w, fig_h), dpi=dpi)
+        gs = fig.add_gridspec(
+            1, 2, width_ratios=[w, panel_w], wspace=0.02
+        )
+        ax_img = fig.add_subplot(gs[0, 0])
+        ax_txt = fig.add_subplot(gs[0, 1])
+
+        ax_img.imshow(img)
+        ax_img.axis("off")
+
+        ax_txt.axis("off")
+        ax_txt.set_facecolor("white")
+
+        params = summary.get("umap_params", {})
+        sample_frac = summary.get("sample_frac", 0.0)
+        sample_pct = f"{sample_frac * 100:.2f}%"
+        max_samples = summary.get("max_samples")
+        max_label = "none" if max_samples is None else str(max_samples)
+        datasets = summary.get("datasets") or []
+
+        lines = [
+            "UMAP settings",
+            f"sample: {sample_pct}",
+            f"max per dataset: {max_label}",
+            f"n_neighbors: {params.get('n_neighbors', '-')}",
+            f"min_dist: {params.get('min_dist', '-')}",
+            f"metric: {params.get('metric', '-')}",
+            f"spread: {params.get('spread', '-')}",
+            "",
+            "datasets:",
+        ]
+        if datasets:
+            for name in datasets:
+                lines.append(f"- {name}")
+        else:
+            lines.append("- none")
+
+        ax_txt.text(
+            0.02,
+            0.98,
+            "\n".join(lines),
+            va="top",
+            ha="left",
+            fontsize=10,
+            color="#1f1b16",
+        )
+
+        fig.patch.set_facecolor("white")
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=dpi, facecolor="white")
+        plt.close(fig)
+        buf.seek(0)
+        return buf.read()
 
 
 class RequestHandler(BaseHTTPRequestHandler):
@@ -454,6 +547,20 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self._send_text(500, "Missing umap_web.html")
                 return
             html = HTML_PATH.read_text(encoding="utf-8")
+            bootstrap = {
+                "datasets": [
+                    {"name": name, "count": self.server.app.dataset_sizes.get(name, 0)}
+                    for name in self.server.app.dataset_keys
+                ],
+                "output_dir": str(self.server.app.output_dir),
+                "root": str(self.server.app.root_path),
+            }
+            marker = "window.__DATASETS_BOOTSTRAP__ = null;"
+            if marker in html:
+                html = html.replace(
+                    marker,
+                    f"window.__DATASETS_BOOTSTRAP__ = {json.dumps(bootstrap)};",
+                )
             self._send_text(200, html, content_type="text/html")
             return
         if self.path == "/api/datasets":
@@ -463,6 +570,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                     for name in self.server.app.dataset_keys
                 ],
                 "output_dir": str(self.server.app.output_dir),
+                "root": str(self.server.app.root_path),
             }
             self._send_json(200, payload)
             return
