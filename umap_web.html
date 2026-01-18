@@ -33,7 +33,7 @@
 
       .page {
         display: grid;
-        grid-template-columns: 320px 1fr;
+        grid-template-columns: auto 1fr;
         gap: 20px;
         padding: 20px;
         min-height: 100vh;
@@ -47,22 +47,29 @@
 
       header {
         grid-column: 1 / -1;
-        padding: 12px 16px;
+        padding: 8px 12px;
         background: var(--panel);
         border: 1px solid var(--border);
         border-radius: 12px;
         box-shadow: 0 8px 18px var(--shadow);
       }
 
+      .header-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
       header h1 {
-        margin: 0 0 6px 0;
-        font-size: 22px;
+        margin: 0 0 4px 0;
+        font-size: 18px;
       }
 
       header p {
         margin: 0;
         color: var(--muted);
-        font-size: 14px;
+        font-size: 12px;
       }
 
       .panel {
@@ -71,6 +78,22 @@
         border-radius: 12px;
         padding: 16px;
         box-shadow: 0 8px 18px var(--shadow);
+      }
+
+      .sidebar {
+        width: 320px;
+        min-width: 220px;
+        max-width: 520px;
+        resize: horizontal;
+        overflow: auto;
+      }
+
+      .sidebar-hidden .sidebar {
+        display: none;
+      }
+
+      .sidebar-hidden .page {
+        grid-template-columns: 1fr;
       }
 
       .panel h2 {
@@ -107,6 +130,16 @@
         flex-wrap: wrap;
       }
 
+      input[type="number"],
+      input[type="text"] {
+        padding: 6px 8px;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+        background: #fffdf7;
+        font-size: 13px;
+        color: var(--ink);
+      }
+
       button {
         background: var(--accent);
         color: #fff;
@@ -116,6 +149,11 @@
         font-size: 13px;
         cursor: pointer;
         transition: transform 0.15s ease, box-shadow 0.15s ease;
+      }
+
+      button.small {
+        padding: 6px 10px;
+        font-size: 12px;
       }
 
       button.secondary {
@@ -158,7 +196,7 @@
         border: 1px dashed var(--border);
         border-radius: 12px;
         padding: 10px;
-        min-height: 480px;
+        min-height: 680px;
         display: flex;
         align-items: center;
         justify-content: center;
@@ -173,7 +211,7 @@
 
       .plot-frame iframe {
         width: 100%;
-        min-height: 540px;
+        min-height: 720px;
         border: none;
       }
 
@@ -198,11 +236,16 @@
   <body>
     <div class="page">
       <header>
-        <h1>UMAP Dataset Explorer</h1>
-        <p>Pick datasets, set sample rate, and recompute UMAP.</p>
+        <div class="header-row">
+          <div class="header-content">
+            <h1>UMAP Dataset Explorer</h1>
+            <p>Pick datasets, set sample rate, and recompute UMAP.</p>
+          </div>
+          <button id="toggle-panel" class="ghost small">Hide panel</button>
+        </div>
       </header>
 
-      <section class="panel controls">
+      <section class="panel controls sidebar" id="sidebar">
         <h2>Datasets</h2>
         <div class="row">
           <button id="select-all" class="ghost">Select all</button>
@@ -216,6 +259,14 @@
           <div class="row">
             <input id="sample-input" type="number" min="0.01" max="100" step="0.01" value="10">
             <div class="status">Sample: <span id="sample-value">10.00</span>%</div>
+          </div>
+        </div>
+
+        <div>
+          <h2>Max samples per dataset</h2>
+          <div class="row">
+            <input id="max-samples" type="number" min="1" step="1" placeholder="optional">
+            <div class="status">Blank or 0 = no cap</div>
           </div>
         </div>
 
@@ -249,10 +300,14 @@
       const sampleSlider = document.getElementById("sample-slider");
       const sampleValue = document.getElementById("sample-value");
       const sampleInput = document.getElementById("sample-input");
+      const maxSamplesInput = document.getElementById("max-samples");
       const runBtn = document.getElementById("run-umap");
       const saveBtn = document.getElementById("save-umap");
       const saveName = document.getElementById("save-name");
       const outputDirEl = document.getElementById("output-dir");
+      const toggleBtn = document.getElementById("toggle-panel");
+      const sidebarEl = document.getElementById("sidebar");
+      let lastAutoName = "";
       const statusEl = document.getElementById("status");
       const imgEl = document.getElementById("umap-image");
       const frameEl = document.getElementById("umap-frame");
@@ -287,6 +342,37 @@
         return selected;
       }
 
+      function formatTimestamp() {
+        const now = new Date();
+        const pad = (v) => String(v).padStart(2, "0");
+        return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+      }
+
+      function buildSuggestedFilename() {
+        const datasets = getSelectedDatasets();
+        const samplePercent = getSamplePercent();
+        const safePercent = samplePercent.toFixed(2).replace(".", "p");
+        const ts = formatTimestamp();
+        let dsPart = "none";
+        if (datasets.length === 1) {
+          dsPart = datasets[0];
+        } else if (datasets.length > 1) {
+          dsPart = datasets.join("-");
+          if (dsPart.length > 60) {
+            dsPart = dsPart.slice(0, 60) + "_more";
+          }
+        }
+        return `umap_${dsPart}_${safePercent}pct_${ts}.png`;
+      }
+
+      function setAutoName(force = false) {
+        const auto = buildSuggestedFilename();
+        if (force || !saveName.value || saveName.value === lastAutoName) {
+          saveName.value = auto;
+          lastAutoName = auto;
+        }
+      }
+
       async function fetchDatasets() {
         const res = await fetch("/api/datasets");
         const data = await res.json();
@@ -294,6 +380,7 @@
         if (data.output_dir) {
           outputDirEl.textContent = data.output_dir;
         }
+        setAutoName(true);
       }
 
       function getSamplePercent() {
@@ -312,6 +399,14 @@
         sampleValue.textContent = safeVal.toFixed(2);
       }
 
+      function getMaxSamples() {
+        const raw = parseInt(maxSamplesInput.value, 10);
+        if (Number.isNaN(raw) || raw <= 0) {
+          return null;
+        }
+        return raw;
+      }
+
       async function runUmap() {
         const datasets = getSelectedDatasets();
         const samplePercent = getSamplePercent();
@@ -319,14 +414,16 @@
           setStatus("Select at least one dataset.");
           return;
         }
+        setAutoName();
         runBtn.disabled = true;
         setStatus("Running UMAP...");
         summaryEl.textContent = "";
         const sample = samplePercent / 100.0;
+        const maxSamples = getMaxSamples();
         const res = await fetch("/api/umap", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ datasets, sample })
+          body: JSON.stringify({ datasets, sample, max_samples: maxSamples })
         });
         if (!res.ok) {
           const text = await res.text();
@@ -353,6 +450,7 @@
       async function saveUmap() {
         saveBtn.disabled = true;
         setStatus("Saving...");
+        setAutoName();
         const name = saveName.value.trim();
         const res = await fetch("/api/save", {
           method: "POST",
@@ -384,14 +482,33 @@
 
       sampleSlider.addEventListener("input", () => {
         syncSampleControls(parseFloat(sampleSlider.value));
+        setAutoName();
       });
 
       sampleInput.addEventListener("input", () => {
         syncSampleControls(parseFloat(sampleInput.value));
+        setAutoName();
       });
 
       runBtn.addEventListener("click", runUmap);
       saveBtn.addEventListener("click", saveUmap);
+      datasetList.addEventListener("change", () => {
+        setAutoName();
+      });
+      toggleBtn.addEventListener("click", () => {
+        const hidden = document.body.classList.toggle("sidebar-hidden");
+        if (hidden) {
+          const width = sidebarEl.getBoundingClientRect().width;
+          sidebarEl.dataset.prevWidth = Math.round(width);
+          toggleBtn.textContent = "Show panel";
+        } else {
+          const prev = sidebarEl.dataset.prevWidth;
+          if (prev) {
+            sidebarEl.style.width = `${prev}px`;
+          }
+          toggleBtn.textContent = "Hide panel";
+        }
+      });
 
       syncSampleControls(parseFloat(sampleSlider.value));
 
