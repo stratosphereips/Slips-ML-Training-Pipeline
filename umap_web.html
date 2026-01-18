@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>UMAP Dataset Explorer</title>
+    <style>
+      :root {
+        --bg: #f4efe3;
+        --bg-accent: #efe2c7;
+        --ink: #1f1b16;
+        --muted: #6b5b4c;
+        --panel: #fff8ea;
+        --border: #d8c7aa;
+        --accent: #2f5f4a;
+        --accent-2: #8a3b2f;
+        --shadow: rgba(31, 27, 22, 0.12);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: "Palatino Linotype", "Book Antiqua", Palatino, serif;
+        color: var(--ink);
+        background:
+          radial-gradient(1100px 700px at 10% -10%, #fff7e3 0%, transparent 60%),
+          radial-gradient(900px 600px at 100% 0%, #f3e7cf 0%, transparent 55%),
+          linear-gradient(120deg, var(--bg), var(--bg-accent));
+      }
+
+      .page {
+        display: grid;
+        grid-template-columns: 320px 1fr;
+        gap: 20px;
+        padding: 20px;
+        min-height: 100vh;
+        animation: fade-in 0.5s ease;
+      }
+
+      @keyframes fade-in {
+        from { opacity: 0; transform: translateY(8px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+
+      header {
+        grid-column: 1 / -1;
+        padding: 12px 16px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        box-shadow: 0 8px 18px var(--shadow);
+      }
+
+      header h1 {
+        margin: 0 0 6px 0;
+        font-size: 22px;
+      }
+
+      header p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 16px;
+        box-shadow: 0 8px 18px var(--shadow);
+      }
+
+      .panel h2 {
+        margin-top: 0;
+        font-size: 16px;
+      }
+
+      .controls {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+
+      .dataset-list {
+        max-height: 340px;
+        overflow: auto;
+        border: 1px solid var(--border);
+        background: #fffdf7;
+        padding: 10px;
+        border-radius: 8px;
+      }
+
+      .dataset-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 13px;
+        padding: 4px 0;
+      }
+
+      .row {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      button {
+        background: var(--accent);
+        color: #fff;
+        border: none;
+        border-radius: 8px;
+        padding: 8px 12px;
+        font-size: 13px;
+        cursor: pointer;
+        transition: transform 0.15s ease, box-shadow 0.15s ease;
+      }
+
+      button.secondary {
+        background: var(--accent-2);
+      }
+
+      button.ghost {
+        background: transparent;
+        color: var(--accent);
+        border: 1px solid var(--accent);
+      }
+
+      button:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+
+      button:hover:not(:disabled) {
+        transform: translateY(-1px);
+        box-shadow: 0 4px 10px rgba(47, 95, 74, 0.2);
+      }
+
+      input[type="range"] {
+        width: 100%;
+      }
+
+      .status {
+        font-size: 13px;
+        color: var(--muted);
+      }
+
+      .plot-area {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+
+      .plot-frame {
+        background: #fffdf7;
+        border: 1px dashed var(--border);
+        border-radius: 12px;
+        padding: 10px;
+        min-height: 480px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .plot-frame img {
+        max-width: 100%;
+        height: auto;
+        border-radius: 8px;
+      }
+
+      .summary {
+        font-size: 13px;
+        color: var(--muted);
+      }
+
+      .output-path {
+        font-size: 12px;
+        color: var(--muted);
+        word-break: break-all;
+      }
+
+      @media (max-width: 900px) {
+        .page {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <header>
+        <h1>UMAP Dataset Explorer</h1>
+        <p>Pick datasets, set sample rate, and recompute UMAP.</p>
+      </header>
+
+      <section class="panel controls">
+        <h2>Datasets</h2>
+        <div class="row">
+          <button id="select-all" class="ghost">Select all</button>
+          <button id="clear-all" class="ghost">Clear</button>
+        </div>
+        <div id="dataset-list" class="dataset-list"></div>
+
+        <div>
+          <h2>Sample (%)</h2>
+          <input id="sample-slider" type="range" min="0.01" max="100" step="0.01" value="10">
+          <div class="row">
+            <input id="sample-input" type="number" min="0.01" max="100" step="0.01" value="10">
+            <div class="status">Sample: <span id="sample-value">10.00</span>%</div>
+          </div>
+        </div>
+
+        <div>
+          <h2>Save</h2>
+          <div class="row">
+            <input id="save-name" type="text" placeholder="optional filename">
+            <button id="save-umap" class="secondary">Save to disk</button>
+          </div>
+          <div class="output-path">Folder: <span id="output-dir">-</span></div>
+        </div>
+
+        <div class="row">
+          <button id="run-umap">Run UMAP</button>
+          <span id="status" class="status"></span>
+        </div>
+      </section>
+
+      <section class="panel plot-area">
+        <h2>UMAP</h2>
+        <div class="plot-frame">
+          <img id="umap-image" alt="UMAP plot will appear here">
+        </div>
+        <div id="summary" class="summary"></div>
+      </section>
+    </div>
+
+    <script>
+      const datasetList = document.getElementById("dataset-list");
+      const sampleSlider = document.getElementById("sample-slider");
+      const sampleValue = document.getElementById("sample-value");
+      const sampleInput = document.getElementById("sample-input");
+      const runBtn = document.getElementById("run-umap");
+      const saveBtn = document.getElementById("save-umap");
+      const saveName = document.getElementById("save-name");
+      const outputDirEl = document.getElementById("output-dir");
+      const statusEl = document.getElementById("status");
+      const imgEl = document.getElementById("umap-image");
+      const summaryEl = document.getElementById("summary");
+
+      function setStatus(msg) {
+        statusEl.textContent = msg;
+      }
+
+      function renderDatasets(datasets) {
+        datasetList.innerHTML = "";
+        datasets.forEach(name => {
+          const label = document.createElement("label");
+          label.className = "dataset-item";
+          const checkbox = document.createElement("input");
+          checkbox.type = "checkbox";
+          checkbox.value = name;
+          checkbox.checked = true;
+          label.appendChild(checkbox);
+          label.appendChild(document.createTextNode(name));
+          datasetList.appendChild(label);
+        });
+      }
+
+      function getSelectedDatasets() {
+        const selected = [];
+        datasetList.querySelectorAll("input[type=checkbox]").forEach(box => {
+          if (box.checked) {
+            selected.push(box.value);
+          }
+        });
+        return selected;
+      }
+
+      async function fetchDatasets() {
+        const res = await fetch("/api/datasets");
+        const data = await res.json();
+        renderDatasets(data.datasets || []);
+        if (data.output_dir) {
+          outputDirEl.textContent = data.output_dir;
+        }
+      }
+
+      function getSamplePercent() {
+        const sliderVal = parseFloat(sampleSlider.value);
+        const inputVal = parseFloat(sampleInput.value);
+        if (!Number.isNaN(inputVal) && document.activeElement === sampleInput) {
+          return inputVal;
+        }
+        return sliderVal;
+      }
+
+      function syncSampleControls(value) {
+        const safeVal = Math.min(100, Math.max(0.01, value));
+        sampleSlider.value = safeVal;
+        sampleInput.value = safeVal;
+        sampleValue.textContent = safeVal.toFixed(2);
+      }
+
+      async function runUmap() {
+        const datasets = getSelectedDatasets();
+        const samplePercent = getSamplePercent();
+        if (!datasets.length) {
+          setStatus("Select at least one dataset.");
+          return;
+        }
+        runBtn.disabled = true;
+        setStatus("Running UMAP...");
+        summaryEl.textContent = "";
+        const sample = samplePercent / 100.0;
+        const res = await fetch("/api/umap", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ datasets, sample })
+        });
+        if (!res.ok) {
+          const text = await res.text();
+          setStatus(text || "UMAP failed.");
+          runBtn.disabled = false;
+          return;
+        }
+        const data = await res.json();
+        imgEl.src = data.image;
+        const total = data.summary ? data.summary.total_points : 0;
+        summaryEl.textContent = `Points: ${total}`;
+        setStatus("Ready.");
+        runBtn.disabled = false;
+      }
+
+      async function saveUmap() {
+        saveBtn.disabled = true;
+        setStatus("Saving...");
+        const name = saveName.value.trim();
+        const res = await fetch("/api/save", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name })
+        });
+        if (!res.ok) {
+          const text = await res.text();
+          setStatus(text || "Save failed.");
+          saveBtn.disabled = false;
+          return;
+        }
+        const data = await res.json();
+        setStatus(`Saved: ${data.path || "done"}`);
+        saveBtn.disabled = false;
+      }
+
+      document.getElementById("select-all").addEventListener("click", () => {
+        datasetList.querySelectorAll("input[type=checkbox]").forEach(box => {
+          box.checked = true;
+        });
+      });
+
+      document.getElementById("clear-all").addEventListener("click", () => {
+        datasetList.querySelectorAll("input[type=checkbox]").forEach(box => {
+          box.checked = false;
+        });
+      });
+
+      sampleSlider.addEventListener("input", () => {
+        syncSampleControls(parseFloat(sampleSlider.value));
+      });
+
+      sampleInput.addEventListener("input", () => {
+        syncSampleControls(parseFloat(sampleInput.value));
+      });
+
+      runBtn.addEventListener("click", runUmap);
+      saveBtn.addEventListener("click", saveUmap);
+
+      syncSampleControls(parseFloat(sampleSlider.value));
+
+      fetchDatasets().then(() => {
+        setStatus("Ready.");
+      });
+    </script>
+  </body>
+</html>
