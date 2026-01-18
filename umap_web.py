@@ -5,6 +5,7 @@ import base64
 import io
 import json
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -102,6 +103,9 @@ class UMAPService:
             shuffle_per_epoch=bool(ds_params.get("shuffle_per_epoch", False)),
         )
         self.dataset_keys = sorted(self.loaders.keys())
+        self.dataset_sizes = {
+            name: int(len(loader)) for name, loader in self.loaders.items()
+        }
         self._init_color_map()
 
     def _init_color_map(self):
@@ -211,6 +215,8 @@ class UMAPService:
         label_order = ["Benign", "Malicious"]
 
         fig, ax = plt.subplots(figsize=(11, 9.5))
+        fig.patch.set_facecolor("white")
+        ax.set_facecolor("white")
         for ds_name in selected:
             for label in label_order:
                 mask = (datasets == ds_name) & (labels == label)
@@ -313,6 +319,8 @@ class UMAPService:
             title="UMAP by Dataset and Label",
             showlegend=True,
             height=760,
+            plot_bgcolor="white",
+            paper_bgcolor="white",
             margin=dict(l=10, r=10, t=40, b=10),
             legend=dict(font=dict(size=9)),
         )
@@ -326,13 +334,51 @@ class UMAPService:
             config={"displaylogo": False, "scrollZoom": True},
         )
 
-    def compute_umap(self, selected, sample_frac, max_samples=None):
+    def _parse_umap_params(self, params):
+        defaults = {
+            "n_neighbors": 15,
+            "min_dist": 0.1,
+            "metric": "euclidean",
+            "spread": 1.0,
+        }
+        if not isinstance(params, dict):
+            return defaults
+
+        out = dict(defaults)
+        if params.get("n_neighbors") is not None:
+            try:
+                nn = int(params.get("n_neighbors"))
+                if nn >= 2:
+                    out["n_neighbors"] = nn
+            except Exception:
+                pass
+        if params.get("min_dist") is not None:
+            try:
+                md = float(params.get("min_dist"))
+                if md >= 0.0:
+                    out["min_dist"] = md
+            except Exception:
+                pass
+        metric = params.get("metric")
+        if isinstance(metric, str) and metric.strip():
+            out["metric"] = metric.strip()
+        if params.get("spread") is not None:
+            try:
+                sp = float(params.get("spread"))
+                if sp > 0.0:
+                    out["spread"] = sp
+            except Exception:
+                pass
+        return out
+
+    def compute_umap(self, selected, sample_frac, max_samples=None, umap_params=None):
         if not selected:
             selected = list(self.dataset_keys)
         selected = [s for s in selected if s in self.loaders]
         if not selected:
             raise RuntimeError("No valid datasets selected.")
 
+        start = time.perf_counter()
         rng = np.random.default_rng(self.seed)
         max_per_dataset = None
         if max_samples is not None:
@@ -347,7 +393,8 @@ class UMAPService:
             selected, sample_frac, rng, max_per_dataset=max_per_dataset
         )
 
-        umap = UMAP(n_components=2, random_state=self.seed)
+        params = self._parse_umap_params(umap_params or {})
+        umap = UMAP(n_components=2, random_state=self.seed, **params)
         embedding = umap.fit_transform(X_all)
 
         png = self._render_plot(embedding, y_all, ds_all, selected)
@@ -360,8 +407,10 @@ class UMAPService:
                 "Malicious": int(np.sum((ds_all == name) & (y_all == "Malicious"))),
             }
 
+        elapsed = time.perf_counter() - start
         summary = {
             "total_points": int(len(y_all)),
+            "duration_sec": float(elapsed),
             "counts": counts,
         }
         self.last_png = png
@@ -405,7 +454,10 @@ class RequestHandler(BaseHTTPRequestHandler):
             return
         if self.path == "/api/datasets":
             payload = {
-                "datasets": self.server.app.dataset_keys,
+                "datasets": [
+                    {"name": name, "count": self.server.app.dataset_sizes.get(name, 0)}
+                    for name in self.server.app.dataset_keys
+                ],
                 "output_dir": str(self.server.app.output_dir),
             }
             self._send_json(200, payload)
@@ -448,9 +500,13 @@ class RequestHandler(BaseHTTPRequestHandler):
             return
 
         max_samples = payload.get("max_samples")
+        umap_params = payload.get("umap_params")
         try:
             png, summary, html = self.server.app.compute_umap(
-                selected, sample, max_samples=max_samples
+                selected,
+                sample,
+                max_samples=max_samples,
+                umap_params=umap_params,
             )
         except Exception as exc:
             self._send_text(500, f"UMAP failed: {exc}")
