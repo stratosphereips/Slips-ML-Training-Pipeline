@@ -411,6 +411,10 @@ class UMAPService:
         summary = {
             "total_points": int(len(y_all)),
             "duration_sec": float(elapsed),
+            "sample_frac": float(sample_frac),
+            "max_samples": max_per_dataset,
+            "umap_params": params,
+            "datasets": list(selected),
             "counts": counts,
         }
         self.last_png = png
