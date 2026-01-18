@@ -9,3 +9,4 @@ river
 mock
 pre-commit
 pytest
+umap-learn
