@@ -27,6 +27,14 @@ except Exception as exc:
     raise SystemExit(1) from exc
 
 try:
+    import plotly.graph_objects as go
+    import plotly.io as pio
+
+    PLOTLY_AVAILABLE = True
+except Exception:
+    PLOTLY_AVAILABLE = False
+
+try:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -228,6 +236,52 @@ class UMAPService:
         buf.seek(0)
         return buf.read()
 
+    def _render_plotly(self, embedding, labels, datasets, selected):
+        if not PLOTLY_AVAILABLE:
+            return None
+
+        label_symbols = {"Benign": "circle", "Malicious": "triangle-up"}
+        label_order = ["Benign", "Malicious"]
+
+        fig = go.Figure()
+        for ds_name in selected:
+            base = self.dataset_colors.get(ds_name, (0.4, 0.4, 0.4))
+            color = f"rgb({int(base[0]*255)},{int(base[1]*255)},{int(base[2]*255)})"
+            for label in label_order:
+                mask = (datasets == ds_name) & (labels == label)
+                if not np.any(mask):
+                    continue
+                fig.add_trace(
+                    go.Scattergl(
+                        x=embedding[mask, 0],
+                        y=embedding[mask, 1],
+                        mode="markers",
+                        marker=dict(
+                            size=5,
+                            color=color,
+                            symbol=label_symbols.get(label, "circle"),
+                            opacity=0.75,
+                        ),
+                        name=f"{ds_name} {label}",
+                    )
+                )
+
+        fig.update_layout(
+            title="UMAP by Dataset and Label",
+            showlegend=True,
+            margin=dict(l=10, r=10, t=40, b=10),
+            legend=dict(font=dict(size=9)),
+        )
+        fig.update_xaxes(visible=False)
+        fig.update_yaxes(visible=False)
+
+        return pio.to_html(
+            fig,
+            include_plotlyjs="inline",
+            full_html=True,
+            config={"displaylogo": False, "scrollZoom": True},
+        )
+
     def compute_umap(self, selected, sample_frac):
         if not selected:
             selected = list(self.dataset_keys)
@@ -242,6 +296,7 @@ class UMAPService:
         embedding = umap.fit_transform(X_all)
 
         png = self._render_plot(embedding, y_all, ds_all, selected)
+        html = self._render_plotly(embedding, y_all, ds_all, selected)
 
         counts = {}
         for name in selected:
@@ -257,7 +312,7 @@ class UMAPService:
         self.last_png = png
         self.last_summary = summary
 
-        return png, summary
+        return png, summary, html
 
     def save_last(self, name=None):
         if self.last_png is None:
@@ -338,16 +393,18 @@ class RequestHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            png, summary = self.server.app.compute_umap(selected, sample)
+            png, summary, html = self.server.app.compute_umap(selected, sample)
         except Exception as exc:
             self._send_text(500, f"UMAP failed: {exc}")
             return
 
-        b64 = base64.b64encode(png).decode("ascii")
-        data_url = f"data:image/png;base64,{b64}"
+        data_url = None
+        if png is not None:
+            b64 = base64.b64encode(png).decode("ascii")
+            data_url = f"data:image/png;base64,{b64}"
         self._send_json(
             200,
-            {"image": data_url, "summary": summary},
+            {"image": data_url, "summary": summary, "html": html},
         )
 
     def log_message(self, fmt, *args):
