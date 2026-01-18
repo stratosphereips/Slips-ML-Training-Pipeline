@@ -105,10 +105,27 @@ class UMAPService:
         self._init_color_map()
 
     def _init_color_map(self):
-        cmap = plt.get_cmap("tab20")
+        self.dataset_index = {
+            name: idx for idx, name in enumerate(self.dataset_keys)
+        }
+        self.cmap_benign = plt.get_cmap("Greens")
+        self.cmap_malicious = plt.get_cmap("Reds")
+
+        # Colors for dataset legend (use benign palette as the base)
         self.dataset_colors = {}
-        for i, name in enumerate(self.dataset_keys):
-            self.dataset_colors[name] = cmap(i % cmap.N)[:3]
+        total = max(1, len(self.dataset_keys) - 1)
+        for name, idx in self.dataset_index.items():
+            pos = idx / total if total else 0.0
+            self.dataset_colors[name] = self.cmap_benign(0.35 + 0.55 * pos)[:3]
+
+    def _label_color(self, label, dataset):
+        total = max(1, len(self.dataset_keys) - 1)
+        idx = self.dataset_index.get(dataset, 0)
+        pos = idx / total if total else 0.0
+        t = 0.35 + 0.55 * pos
+        if label == "Malicious":
+            return self.cmap_malicious(t)[:3]
+        return self.cmap_benign(t)[:3]
 
     def _build_preprocessor(self):
         prep = PreprocessingWrapper(
@@ -130,7 +147,7 @@ class UMAPService:
             return prep, True
         return prep, False
 
-    def _collect_samples(self, selected, sample_frac, rng):
+    def _collect_samples(self, selected, sample_frac, rng, max_per_dataset=None):
         feature_extractor = FeatureExtraction(
             **self.cfg_reader.get_feature_extractor_params()
         )
@@ -143,7 +160,10 @@ class UMAPService:
         for ds_name in selected:
             loader = self.loaders[ds_name]
             loader.reset_epoch(batch_size=loader.batch_size)
+            collected = 0
             while True:
+                if max_per_dataset is not None and collected >= max_per_dataset:
+                    break
                 batch = loader.next_batch()
                 if batch is None:
                     break
@@ -158,11 +178,19 @@ class UMAPService:
                         continue
                     X_np = X_np[mask]
                     y_np = y_np[mask]
+                if max_per_dataset is not None:
+                    remaining = max_per_dataset - collected
+                    if remaining <= 0:
+                        break
+                    if X_np.shape[0] > remaining:
+                        X_np = X_np[:remaining]
+                        y_np = y_np[:remaining]
                 X_parts.append(X_np)
                 y_parts.append(y_np)
                 ds_parts.append(
                     np.array([ds_name] * len(y_np), dtype="object")
                 )
+                collected += len(y_np)
 
         if not X_parts:
             raise RuntimeError("No samples collected for the selection.")
@@ -182,14 +210,13 @@ class UMAPService:
         label_markers = {"Benign": "o", "Malicious": "^"}
         label_order = ["Benign", "Malicious"]
 
-        fig, ax = plt.subplots(figsize=(11, 7))
+        fig, ax = plt.subplots(figsize=(11, 9.5))
         for ds_name in selected:
-            base = self.dataset_colors.get(ds_name, (0.4, 0.4, 0.4))
             for label in label_order:
                 mask = (datasets == ds_name) & (labels == label)
                 if not np.any(mask):
                     continue
-                color = base if label == "Benign" else _adjust_color(base, 0.6)
+                color = self._label_color(label, ds_name)
                 ax.scatter(
                     embedding[mask, 0],
                     embedding[mask, 1],
@@ -209,7 +236,16 @@ class UMAPService:
             for name in selected
         ]
         label_handles = [
-            Line2D([0], [0], marker=label_markers[label], color="k", linestyle="None", label=label)
+            Line2D(
+                [0],
+                [0],
+                marker=label_markers[label],
+                color="none",
+                markerfacecolor=self._label_color(label, selected[0]),
+                markeredgecolor="none",
+                linestyle="None",
+                label=label,
+            )
             for label in label_order
         ]
 
@@ -245,12 +281,12 @@ class UMAPService:
 
         fig = go.Figure()
         for ds_name in selected:
-            base = self.dataset_colors.get(ds_name, (0.4, 0.4, 0.4))
-            color = f"rgb({int(base[0]*255)},{int(base[1]*255)},{int(base[2]*255)})"
             for label in label_order:
                 mask = (datasets == ds_name) & (labels == label)
                 if not np.any(mask):
                     continue
+                color_rgb = self._label_color(label, ds_name)
+                color = f"rgb({int(color_rgb[0]*255)},{int(color_rgb[1]*255)},{int(color_rgb[2]*255)})"
                 fig.add_trace(
                     go.Scattergl(
                         x=embedding[mask, 0],
@@ -263,12 +299,20 @@ class UMAPService:
                             opacity=0.75,
                         ),
                         name=f"{ds_name} {label}",
+                        customdata=np.column_stack(
+                            (
+                                np.full(np.sum(mask), ds_name),
+                                np.full(np.sum(mask), label),
+                            )
+                        ),
+                        hovertemplate="dataset: %{customdata[0]}<br>label: %{customdata[1]}<extra></extra>",
                     )
                 )
 
         fig.update_layout(
             title="UMAP by Dataset and Label",
             showlegend=True,
+            height=760,
             margin=dict(l=10, r=10, t=40, b=10),
             legend=dict(font=dict(size=9)),
         )
@@ -282,7 +326,7 @@ class UMAPService:
             config={"displaylogo": False, "scrollZoom": True},
         )
 
-    def compute_umap(self, selected, sample_frac):
+    def compute_umap(self, selected, sample_frac, max_samples=None):
         if not selected:
             selected = list(self.dataset_keys)
         selected = [s for s in selected if s in self.loaders]
@@ -290,7 +334,18 @@ class UMAPService:
             raise RuntimeError("No valid datasets selected.")
 
         rng = np.random.default_rng(self.seed)
-        X_all, y_all, ds_all = self._collect_samples(selected, sample_frac, rng)
+        max_per_dataset = None
+        if max_samples is not None:
+            try:
+                max_per_dataset = int(max_samples)
+            except Exception:
+                max_per_dataset = None
+            if max_per_dataset is not None and max_per_dataset <= 0:
+                max_per_dataset = None
+
+        X_all, y_all, ds_all = self._collect_samples(
+            selected, sample_frac, rng, max_per_dataset=max_per_dataset
+        )
 
         umap = UMAP(n_components=2, random_state=self.seed)
         embedding = umap.fit_transform(X_all)
@@ -392,8 +447,11 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._send_text(400, "Sample fraction must be > 0")
             return
 
+        max_samples = payload.get("max_samples")
         try:
-            png, summary, html = self.server.app.compute_umap(selected, sample)
+            png, summary, html = self.server.app.compute_umap(
+                selected, sample, max_samples=max_samples
+            )
         except Exception as exc:
             self._send_text(500, f"UMAP failed: {exc}")
             return
