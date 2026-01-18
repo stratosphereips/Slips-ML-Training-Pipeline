@@ -1,4 +1,4 @@
-experiment_name: default_experiment
+experiment_name: experiment_6
 
 # root of the dataset folder
 # should contain subfolders with ID in the names (e.g., 001, 002, ...)
@@ -58,21 +58,25 @@ model:
   wrapper: RiverClassifierWrapper
   classifier_type: ADWINBoostingClassifier
   classifier_params:
-    n_models: 20
+    n_models: 5
     model:
       type: HoeffdingAdaptiveTreeClassifier
       params:
-        max_depth: 12
-        grace_period: 150
-        max_size: 0
-        delta: 1.0e-6
+        max_depth: 15
+        grace_period: 300
+        max_size: 10
+        delta: 1.0e-7
   save_name: classifier_adwinboost.bin
 
 commands:
   - name: "train_seq" # command name
     command: "train" # train/test
     mixer: # mixer = data selection strategy: sequence, balanced, random
-      type: "sequence"
+      type: "balanced_by_label"
+      labels: ["Benign", "Malicious"]
+      balance:
+        Benign: 0.9
+        Malicious: 0.1
       # in sequence, drain all of the datasets to the end,
       # then begin with a new one
       datasets: ["001", "008", "009", "010", "011", "012", "013", "014", "015", "016", "017", "022", "023", "024", "027", "028", "029", "032", "033", "034"]
