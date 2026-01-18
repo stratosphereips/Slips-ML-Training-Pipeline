@@ -72,6 +72,44 @@ Key modules:
 
 ---
 
+## UMAP Visualization Tools
+
+Two helper tools were added to explore the datasets with a single UMAP embedding.
+
+### 1) Manual (one-shot) UMAP
+
+Script: `umap_from_config.py`
+
+Uses the same dataset loader, feature extraction, and preprocessing as the pipeline.
+It builds one UMAP across train/eval/test and saves a PNG.
+
+```bash
+python umap_from_config.py default_config.yaml --sample 0.1 --output umap.png
+```
+
+Notes:
+* `--sample` accepts a fraction (0–1) or percent (0–100).
+* If `preprocessing.load_from` is set in the config, it reuses those artifacts; otherwise it fits on the sampled data.
+
+### 2) Local interactive UMAP web UI
+
+Scripts: `umap_web.py` + `umap_web.html`
+
+Start a local server, pick datasets and sample %, and recompute UMAP on demand.
+
+```bash
+python umap_web.py default_config.yaml --port 8000 --output-dir ./umap_exports
+```
+
+Then open `http://127.0.0.1:8000` in your browser.
+
+Features:
+* Select/deselect datasets and set the sample percentage (supports 0.01%).
+* Interactive zoom/pan when `plotly` is installed; falls back to static PNG otherwise.
+* Save the last generated UMAP to disk from the UI (saved under `--output-dir`).
+
+---
+
 ## Output
 
 #### Training example output
