@@ -124,6 +124,12 @@
         padding: 4px 0;
       }
 
+      .dataset-count {
+        color: var(--muted);
+        font-size: 12px;
+        margin-left: auto;
+      }
+
       .row {
         display: flex;
         gap: 8px;
@@ -192,26 +198,29 @@
       }
 
       .plot-frame {
-        background: #fffdf7;
+        background: #ffffff;
         border: 1px dashed var(--border);
         border-radius: 12px;
         padding: 10px;
-        min-height: 680px;
+        height: 720px;
+        min-height: 420px;
         display: flex;
         align-items: center;
         justify-content: center;
+        resize: vertical;
+        overflow: auto;
       }
 
       .plot-frame img,
       .plot-frame iframe {
         max-width: 100%;
-        height: auto;
+        height: 100%;
         border-radius: 8px;
       }
 
       .plot-frame iframe {
         width: 100%;
-        min-height: 720px;
+        height: 100%;
         border: none;
       }
 
@@ -271,6 +280,19 @@
         </div>
 
         <div>
+          <h2>UMAP params</h2>
+          <div class="row">
+            <input id="umap-neighbors" type="number" min="2" step="1" value="15" title="n_neighbors">
+            <input id="umap-min-dist" type="number" min="0" step="0.01" value="0.1" title="min_dist">
+          </div>
+          <div class="row">
+            <input id="umap-metric" type="text" value="euclidean" title="metric">
+            <input id="umap-spread" type="number" min="0" step="0.01" value="1.0" title="spread">
+          </div>
+          <div class="status">n_neighbors / min_dist / metric / spread</div>
+        </div>
+
+        <div>
           <h2>Save</h2>
           <div class="row">
             <input id="save-name" type="text" placeholder="optional filename">
@@ -301,6 +323,10 @@
       const sampleValue = document.getElementById("sample-value");
       const sampleInput = document.getElementById("sample-input");
       const maxSamplesInput = document.getElementById("max-samples");
+      const umapNeighbors = document.getElementById("umap-neighbors");
+      const umapMinDist = document.getElementById("umap-min-dist");
+      const umapMetric = document.getElementById("umap-metric");
+      const umapSpread = document.getElementById("umap-spread");
       const runBtn = document.getElementById("run-umap");
       const saveBtn = document.getElementById("save-umap");
       const saveName = document.getElementById("save-name");
@@ -319,7 +345,9 @@
 
       function renderDatasets(datasets) {
         datasetList.innerHTML = "";
-        datasets.forEach(name => {
+        datasets.forEach(item => {
+          const name = typeof item === "string" ? item : item.name;
+          const count = typeof item === "string" ? null : item.count;
           const label = document.createElement("label");
           label.className = "dataset-item";
           const checkbox = document.createElement("input");
@@ -328,6 +356,12 @@
           checkbox.checked = true;
           label.appendChild(checkbox);
           label.appendChild(document.createTextNode(name));
+          if (count !== null && count !== undefined) {
+            const span = document.createElement("span");
+            span.className = "dataset-count";
+            span.textContent = `${count} samples`;
+            label.appendChild(span);
+          }
           datasetList.appendChild(label);
         });
       }
@@ -407,6 +441,19 @@
         return raw;
       }
 
+      function getUmapParams() {
+        const nNeighbors = parseInt(umapNeighbors.value, 10);
+        const minDist = parseFloat(umapMinDist.value);
+        const metric = umapMetric.value.trim() || "euclidean";
+        const spread = parseFloat(umapSpread.value);
+        return {
+          n_neighbors: Number.isNaN(nNeighbors) ? null : nNeighbors,
+          min_dist: Number.isNaN(minDist) ? null : minDist,
+          metric,
+          spread: Number.isNaN(spread) ? null : spread
+        };
+      }
+
       async function runUmap() {
         const datasets = getSelectedDatasets();
         const samplePercent = getSamplePercent();
@@ -420,10 +467,16 @@
         summaryEl.textContent = "";
         const sample = samplePercent / 100.0;
         const maxSamples = getMaxSamples();
+        const umapParams = getUmapParams();
         const res = await fetch("/api/umap", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ datasets, sample, max_samples: maxSamples })
+          body: JSON.stringify({
+            datasets,
+            sample,
+            max_samples: maxSamples,
+            umap_params: umapParams
+          })
         });
         if (!res.ok) {
           const text = await res.text();
@@ -441,8 +494,19 @@
           imgEl.style.display = "block";
           frameEl.style.display = "none";
         }
-        const total = data.summary ? data.summary.total_points : 0;
-        summaryEl.textContent = `Points: ${total}`;
+        const summary = data.summary || {};
+        const total = summary.total_points || 0;
+        const duration = summary.duration_sec || 0;
+        const counts = summary.counts || {};
+        const lines = [`Points: ${total}`, `UMAP time: ${duration.toFixed(2)}s`];
+        Object.keys(counts).forEach(name => {
+          const item = counts[name] || {};
+          const b = item.Benign || 0;
+          const m = item.Malicious || 0;
+          const t = b + m;
+          lines.push(`${name}: ${t} (B ${b} / M ${m})`);
+        });
+        summaryEl.innerHTML = lines.join("<br>");
         setStatus("Ready.");
         runBtn.disabled = false;
       }
