@@ -164,10 +164,17 @@
         justify-content: center;
       }
 
-      .plot-frame img {
+      .plot-frame img,
+      .plot-frame iframe {
         max-width: 100%;
         height: auto;
         border-radius: 8px;
+      }
+
+      .plot-frame iframe {
+        width: 100%;
+        min-height: 540px;
+        border: none;
       }
 
       .summary {
@@ -230,6 +237,7 @@
       <section class="panel plot-area">
         <h2>UMAP</h2>
         <div class="plot-frame">
+          <iframe id="umap-frame" title="UMAP interactive plot" style="display: none;"></iframe>
           <img id="umap-image" alt="UMAP plot will appear here">
         </div>
         <div id="summary" class="summary"></div>
@@ -247,6 +255,7 @@
       const outputDirEl = document.getElementById("output-dir");
       const statusEl = document.getElementById("status");
       const imgEl = document.getElementById("umap-image");
+      const frameEl = document.getElementById("umap-frame");
       const summaryEl = document.getElementById("summary");
 
       function setStatus(msg) {
@@ -326,7 +335,15 @@
           return;
         }
         const data = await res.json();
-        imgEl.src = data.image;
+        if (data.html) {
+          frameEl.srcdoc = data.html;
+          frameEl.style.display = "block";
+          imgEl.style.display = "none";
+        } else if (data.image) {
+          imgEl.src = data.image;
+          imgEl.style.display = "block";
+          frameEl.style.display = "none";
+        }
         const total = data.summary ? data.summary.total_points : 0;
         summaryEl.textContent = `Points: ${total}`;
         setStatus("Ready.");
