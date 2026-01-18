@@ -212,25 +212,6 @@
         gap: 12px;
       }
 
-      .plot-layout {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) 260px;
-        gap: 12px;
-      }
-
-      .run-info {
-        background: #ffffff;
-        border: 1px solid var(--border);
-        border-radius: 12px;
-        padding: 12px;
-        height: fit-content;
-        box-shadow: 0 6px 14px var(--shadow);
-      }
-
-      .run-info h3 {
-        margin: 0 0 8px 0;
-        font-size: 14px;
-      }
 
       .plot-frame {
         background: #ffffff;
@@ -275,9 +256,6 @@
           grid-template-columns: 1fr;
         }
 
-        .plot-layout {
-          grid-template-columns: 1fr;
-        }
       }
     </style>
   </head>
@@ -368,17 +346,11 @@
 
       <section class="panel plot-area">
         <h2>UMAP</h2>
-        <div class="plot-layout">
-          <div class="plot-frame">
-            <iframe id="umap-frame" title="UMAP interactive plot" style="display: none;"></iframe>
-            <img id="umap-image" alt="UMAP plot will appear here">
-          </div>
-          <aside class="run-info">
-            <h3>Run info</h3>
-            <div id="run-params" class="summary"></div>
-            <div id="run-summary" class="summary"></div>
-          </aside>
+        <div class="plot-frame">
+          <iframe id="umap-frame" title="UMAP interactive plot" style="display: none;"></iframe>
+          <img id="umap-image" alt="UMAP plot will appear here">
         </div>
+        <div id="run-summary" class="summary"></div>
       </section>
     </div>
 
@@ -402,7 +374,6 @@
       const statusEl = document.getElementById("status");
       const imgEl = document.getElementById("umap-image");
       const frameEl = document.getElementById("umap-frame");
-      const paramsEl = document.getElementById("run-params");
       const summaryEl = document.getElementById("run-summary");
 
       function setStatus(msg) {
@@ -411,6 +382,13 @@
 
       function renderDatasets(datasets) {
         datasetList.innerHTML = "";
+        if (!datasets.length) {
+          const empty = document.createElement("div");
+          empty.className = "status";
+          empty.textContent = "No datasets found.";
+          datasetList.appendChild(empty);
+          return;
+        }
         datasets.forEach(item => {
           const name = typeof item === "string" ? item : item.name;
           const count = typeof item === "string" ? null : item.count;
@@ -473,14 +451,46 @@
         }
       }
 
-      async function fetchDatasets() {
-        const res = await fetch("/api/datasets");
-        const data = await res.json();
-        renderDatasets(data.datasets || []);
-        if (data.output_dir) {
-          outputDirEl.textContent = data.output_dir;
+      window.__DATASETS_BOOTSTRAP__ = null;
+
+      function applyBootstrap() {
+        const boot = window.__DATASETS_BOOTSTRAP__;
+        if (boot && Array.isArray(boot.datasets)) {
+          renderDatasets(boot.datasets);
+          if (boot.output_dir) {
+            outputDirEl.textContent = boot.output_dir;
+          }
+          setAutoName(true);
+          return true;
         }
-        setAutoName(true);
+        return false;
+      }
+
+      async function fetchDatasets() {
+        try {
+          const res = await fetch("/api/datasets");
+          if (!res.ok) {
+            const text = await res.text();
+            throw new Error(text || "Failed to load datasets");
+          }
+          const data = await res.json();
+          const datasets = Array.isArray(data.datasets) ? data.datasets : [];
+          renderDatasets(datasets);
+          if (data.output_dir) {
+            outputDirEl.textContent = data.output_dir;
+          }
+          setAutoName(true);
+        } catch (err) {
+          if (!applyBootstrap()) {
+            datasetList.innerHTML = "";
+            const empty = document.createElement("div");
+            empty.className = "status";
+            const msg = err && err.message ? err.message : "Failed to load datasets.";
+            empty.textContent = `${msg} (Make sure you opened http://127.0.0.1:8000)`;
+            datasetList.appendChild(empty);
+            setStatus("Dataset list failed to load.");
+          }
+        }
       }
 
       function getSamplePercent() {
@@ -564,22 +574,6 @@
         const total = summary.total_points || 0;
         const duration = summary.duration_sec || 0;
         const counts = summary.counts || {};
-        const sampleFrac = summary.sample_frac || 0;
-        const maxSamples = summary.max_samples;
-        const umapParams = summary.umap_params || {};
-        const datasets = summary.datasets || [];
-        const samplePercent = (sampleFrac * 100).toFixed(2);
-        const maxSamplesLabel = (maxSamples === null || maxSamples === undefined) ? "none" : maxSamples;
-        const paramLines = [
-          `Datasets: ${datasets.length || 0}`,
-          `Sample: ${samplePercent}%`,
-          `Max per dataset: ${maxSamplesLabel}`,
-          `n_neighbors: ${umapParams.n_neighbors ?? "-"}`,
-          `min_dist: ${umapParams.min_dist ?? "-"}`,
-          `metric: ${umapParams.metric ?? "-"}`,
-          `spread: ${umapParams.spread ?? "-"}`
-        ];
-        paramsEl.innerHTML = paramLines.join("<br>");
         const lines = [`Points: ${total}`, `UMAP time: ${duration.toFixed(2)}s`];
         Object.keys(counts).forEach(name => {
           const item = counts[name] || {};
@@ -658,6 +652,7 @@
 
       syncSampleControls(parseFloat(sampleSlider.value));
 
+      applyBootstrap();
       fetchDatasets().then(() => {
         setStatus("Ready.");
       });
