@@ -96,6 +96,36 @@
         grid-template-columns: 1fr;
       }
 
+      .tabs {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+
+      .tab-button {
+        background: transparent;
+        color: var(--accent);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 6px 12px;
+        font-size: 12px;
+        cursor: pointer;
+      }
+
+      .tab-button.active {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #fff;
+      }
+
+      .tab-panel {
+        display: none;
+      }
+
+      .tab-panel.active {
+        display: block;
+      }
+
       .panel h2 {
         margin-top: 0;
         font-size: 16px;
@@ -251,6 +281,60 @@
         word-break: break-all;
       }
 
+      .history-list {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        max-height: 520px;
+        overflow: auto;
+        border: 1px solid var(--border);
+        background: #fffdf7;
+        padding: 10px;
+        border-radius: 8px;
+      }
+
+      .history-item {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 10px;
+        background: #ffffff;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .history-title {
+        font-size: 13px;
+        font-weight: 600;
+      }
+
+      .history-meta,
+      .history-params {
+        font-size: 12px;
+        color: var(--muted);
+        line-height: 1.4;
+      }
+
+      .history-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .history-link {
+        font-size: 12px;
+        color: var(--accent);
+        border: 1px solid var(--accent);
+        padding: 4px 8px;
+        border-radius: 6px;
+        text-decoration: none;
+      }
+
+      .history-link.disabled {
+        opacity: 0.5;
+        pointer-events: none;
+      }
+
       @media (max-width: 900px) {
         .page {
           grid-template-columns: 1fr;
@@ -272,77 +356,94 @@
       </header>
 
       <section class="panel controls sidebar" id="sidebar">
-        <h2>Datasets</h2>
-        <div class="row">
-          <button id="select-all" class="ghost">Select all</button>
-          <button id="clear-all" class="ghost">Clear</button>
-        </div>
-        <div id="dataset-list" class="dataset-list">
-          <div class="status">Loading datasets...</div>
+        <div class="tabs">
+          <button id="tab-run" class="tab-button active" data-tab="run">Run</button>
+          <button id="tab-history" class="tab-button" data-tab="history">History</button>
         </div>
 
-        <div>
-          <h2>Sample (%)</h2>
-          <input id="sample-slider" type="range" min="0.01" max="100" step="0.01" value="10">
+        <div id="tab-panel-run" class="tab-panel active" data-tab-panel="run">
+          <h2>Datasets</h2>
           <div class="row">
-            <input id="sample-input" type="number" min="0.01" max="100" step="0.01" value="10">
-            <div class="status">Sample: <span id="sample-value">10.00</span>%</div>
+            <button id="select-all" class="ghost">Select all</button>
+            <button id="clear-all" class="ghost">Clear</button>
+          </div>
+          <div id="dataset-list" class="dataset-list">
+            <div class="status">Loading datasets...</div>
+          </div>
+
+          <div>
+            <h2>Sample (%)</h2>
+            <input id="sample-slider" type="range" min="0.01" max="100" step="0.01" value="10">
+            <div class="row">
+              <input id="sample-input" type="number" min="0.01" max="100" step="0.01" value="10">
+              <div class="status">Sample: <span id="sample-value">10.00</span>%</div>
+            </div>
+          </div>
+
+          <div>
+            <h2>Max samples per dataset</h2>
+            <div class="row">
+              <input id="max-samples" type="number" min="1" step="1" placeholder="optional">
+              <div class="status">Blank or 0 = no cap</div>
+            </div>
+          </div>
+
+          <div>
+            <h2>UMAP params</h2>
+            <div class="row">
+              <label class="field">
+                <span>n_neighbors</span>
+                <input id="umap-neighbors" type="number" min="2" step="1" value="15">
+              </label>
+              <label class="field">
+                <span>min_dist</span>
+                <input id="umap-min-dist" type="number" min="0" step="0.01" value="0.1">
+              </label>
+            </div>
+            <div class="row">
+              <label class="field">
+                <span>metric</span>
+                <select id="umap-metric">
+                  <option value="euclidean" selected>euclidean</option>
+                  <option value="manhattan">manhattan</option>
+                  <option value="chebyshev">chebyshev</option>
+                  <option value="minkowski">minkowski</option>
+                  <option value="cosine">cosine</option>
+                  <option value="correlation">correlation</option>
+                  <option value="hamming">hamming</option>
+                  <option value="jaccard">jaccard</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>spread</span>
+                <input id="umap-spread" type="number" min="0" step="0.01" value="1.0">
+              </label>
+            </div>
+          </div>
+
+          <div>
+            <h2>Save</h2>
+            <div class="row">
+              <input id="save-name" type="text" placeholder="optional filename">
+              <button id="save-umap" class="secondary">Save to disk</button>
+            </div>
+            <div class="output-path">Folder: <span id="output-dir">-</span></div>
+          </div>
+
+          <div class="row">
+            <button id="run-umap">Run UMAP</button>
+            <span id="status" class="status"></span>
           </div>
         </div>
 
-        <div>
-          <h2>Max samples per dataset</h2>
+        <div id="tab-panel-history" class="tab-panel" data-tab-panel="history">
           <div class="row">
-            <input id="max-samples" type="number" min="1" step="1" placeholder="optional">
-            <div class="status">Blank or 0 = no cap</div>
+            <button id="refresh-history" class="ghost small">Refresh</button>
+            <span id="history-status" class="status"></span>
           </div>
-        </div>
-
-        <div>
-          <h2>UMAP params</h2>
-          <div class="row">
-            <label class="field">
-              <span>n_neighbors</span>
-              <input id="umap-neighbors" type="number" min="2" step="1" value="15">
-            </label>
-            <label class="field">
-              <span>min_dist</span>
-              <input id="umap-min-dist" type="number" min="0" step="0.01" value="0.1">
-            </label>
+          <div id="history-list" class="history-list">
+            <div class="status">No past runs yet.</div>
           </div>
-          <div class="row">
-            <label class="field">
-              <span>metric</span>
-              <select id="umap-metric">
-                <option value="euclidean" selected>euclidean</option>
-                <option value="manhattan">manhattan</option>
-                <option value="chebyshev">chebyshev</option>
-                <option value="minkowski">minkowski</option>
-                <option value="cosine">cosine</option>
-                <option value="correlation">correlation</option>
-                <option value="hamming">hamming</option>
-                <option value="jaccard">jaccard</option>
-              </select>
-            </label>
-            <label class="field">
-              <span>spread</span>
-              <input id="umap-spread" type="number" min="0" step="0.01" value="1.0">
-            </label>
-          </div>
-        </div>
-
-        <div>
-          <h2>Save</h2>
-          <div class="row">
-            <input id="save-name" type="text" placeholder="optional filename">
-            <button id="save-umap" class="secondary">Save to disk</button>
-          </div>
-          <div class="output-path">Folder: <span id="output-dir">-</span></div>
-        </div>
-
-        <div class="row">
-          <button id="run-umap">Run UMAP</button>
-          <span id="status" class="status"></span>
         </div>
       </section>
 
@@ -372,6 +473,11 @@
       const outputDirEl = document.getElementById("output-dir");
       const toggleBtn = document.getElementById("toggle-panel");
       const sidebarEl = document.getElementById("sidebar");
+      const tabButtons = document.querySelectorAll(".tab-button");
+      const tabPanels = document.querySelectorAll(".tab-panel");
+      const historyList = document.getElementById("history-list");
+      const historyStatus = document.getElementById("history-status");
+      const refreshHistoryBtn = document.getElementById("refresh-history");
       let lastAutoName = "";
       const statusEl = document.getElementById("status");
       const imgEl = document.getElementById("umap-image");
@@ -380,9 +486,26 @@
       let currentJobId = null;
       let lastCompletedJobId = null;
       let pollTimer = null;
+      let pendingParams = null;
 
       function setStatus(msg) {
         statusEl.textContent = msg;
+      }
+
+      function setHistoryStatus(msg) {
+        historyStatus.textContent = msg || "";
+      }
+
+      function setActiveTab(name) {
+        tabButtons.forEach(btn => {
+          btn.classList.toggle("active", btn.dataset.tab === name);
+        });
+        tabPanels.forEach(panel => {
+          panel.classList.toggle("active", panel.dataset.tabPanel === name);
+        });
+        if (name === "history") {
+          refreshHistory();
+        }
       }
 
       function renderDatasets(datasets) {
@@ -535,6 +658,24 @@
         };
       }
 
+      function renderResult(result) {
+        if (!result) {
+          return;
+        }
+        if (result.html) {
+          frameEl.srcdoc = result.html;
+          frameEl.style.display = "block";
+          imgEl.style.display = "none";
+        } else if (result.image) {
+          imgEl.src = result.image;
+          imgEl.style.display = "block";
+          frameEl.style.display = "none";
+        }
+        if (result.summary) {
+          updateSummary(result.summary);
+        }
+      }
+
       async function runUmap() {
         const datasets = getSelectedDatasets();
         const samplePercent = getSamplePercent();
@@ -570,6 +711,7 @@
         localStorage.setItem("umapJobId", currentJobId);
         setStatus(`Job ${currentJobId} queued...`);
         startPolling(currentJobId);
+        refreshHistory();
         runBtn.disabled = false;
       }
 
@@ -616,23 +758,14 @@
               pollTimer = null;
               lastCompletedJobId = jobId;
               const result = await fetchJobResult(jobId);
-              if (result.html) {
-                frameEl.srcdoc = result.html;
-                frameEl.style.display = "block";
-                imgEl.style.display = "none";
-              } else if (result.image) {
-                imgEl.src = result.image;
-                imgEl.style.display = "block";
-                frameEl.style.display = "none";
-              }
-              if (result.summary) {
-                updateSummary(result.summary);
-              }
+              renderResult(result);
               setStatus(`Job ${jobId} done.`);
+              refreshHistory();
             } else if (job.status === "error" || job.status === "stale") {
               clearInterval(pollTimer);
               pollTimer = null;
               setStatus(`Job ${jobId} failed: ${job.error || "unknown error"}`);
+              refreshHistory();
             } else {
               setStatus(`Job ${jobId} ${job.status}...`);
             }
@@ -664,6 +797,224 @@
         const msg = data.html ? `Saved: ${data.path} (html: ${data.html})` : `Saved: ${data.path || "done"}`;
         setStatus(msg);
         saveBtn.disabled = false;
+        refreshHistory();
+      }
+
+      function applyParamsFromJob(params) {
+        if (!params) {
+          return;
+        }
+        const datasetChecks = datasetList.querySelectorAll("input[type=checkbox]");
+        if (!datasetChecks.length) {
+          pendingParams = params;
+          return;
+        }
+        const selected = new Set(params.datasets || []);
+        datasetChecks.forEach(box => {
+          box.checked = selected.has(box.value);
+        });
+        const sample = params.sample;
+        if (sample !== undefined && sample !== null) {
+          const pct = sample > 1 ? sample : sample * 100;
+          syncSampleControls(pct);
+        }
+        const maxSamples = params.max_samples;
+        maxSamplesInput.value = maxSamples ? String(maxSamples) : "";
+        const umapParams = params.umap_params || {};
+        if (umapParams.n_neighbors !== undefined && umapParams.n_neighbors !== null) {
+          umapNeighbors.value = umapParams.n_neighbors;
+        }
+        if (umapParams.min_dist !== undefined && umapParams.min_dist !== null) {
+          umapMinDist.value = umapParams.min_dist;
+        }
+        if (umapParams.metric) {
+          umapMetric.value = umapParams.metric;
+        }
+        if (umapParams.spread !== undefined && umapParams.spread !== null) {
+          umapSpread.value = umapParams.spread;
+        }
+        setAutoName(true);
+      }
+
+      async function loadJobResult(jobId) {
+        try {
+          const result = await fetchJobResult(jobId);
+          renderResult(result);
+          lastCompletedJobId = jobId;
+          currentJobId = jobId;
+          localStorage.setItem("umapJobId", jobId);
+          setStatus(`Loaded job ${jobId}.`);
+        } catch (err) {
+          setStatus(`Failed to load job ${jobId}.`);
+        }
+      }
+
+      function formatTimestampFromEpoch(epoch) {
+        if (!epoch) {
+          return "unknown time";
+        }
+        try {
+          return new Date(epoch * 1000).toLocaleString();
+        } catch (err) {
+          return "unknown time";
+        }
+      }
+
+      function formatSamplePct(sample) {
+        if (sample === undefined || sample === null) {
+          return "n/a";
+        }
+        const pct = sample > 1 ? sample : sample * 100;
+        return `${pct.toFixed(2)}%`;
+      }
+
+      function renderHistory(jobs) {
+        historyList.innerHTML = "";
+        if (!jobs.length) {
+          const empty = document.createElement("div");
+          empty.className = "status";
+          empty.textContent = "No past runs yet.";
+          historyList.appendChild(empty);
+          return;
+        }
+        jobs.forEach(job => {
+          const params = job.params || {};
+          const summary = job.summary || {};
+          const datasets = params.datasets || summary.datasets || [];
+          const sample = params.sample !== undefined ? params.sample : summary.sample_frac;
+          const maxSamples = params.max_samples !== undefined ? params.max_samples : summary.max_samples;
+          const umapParams = params.umap_params || summary.umap_params || {};
+          const created = formatTimestampFromEpoch(job.created_at);
+          const status = job.status || "unknown";
+          const shortId = job.id ? job.id.slice(0, 8) : "unknown";
+
+          const card = document.createElement("div");
+          card.className = "history-item";
+
+          const title = document.createElement("div");
+          title.className = "history-title";
+          title.textContent = `${shortId} • ${status} • ${created}`;
+          card.appendChild(title);
+
+          const meta = document.createElement("div");
+          meta.className = "history-meta";
+          if (summary.duration_sec) {
+            meta.textContent = `UMAP time: ${summary.duration_sec.toFixed(2)}s`;
+          } else if (job.started_at && job.finished_at) {
+            const secs = Math.max(0, job.finished_at - job.started_at);
+            meta.textContent = `UMAP time: ${secs.toFixed(2)}s`;
+          } else {
+            meta.textContent = "UMAP time: -";
+          }
+          card.appendChild(meta);
+
+          const paramText = [
+            `sample: ${formatSamplePct(sample)}`,
+            `max per dataset: ${maxSamples ? maxSamples : "none"}`,
+            `n_neighbors: ${umapParams.n_neighbors !== undefined ? umapParams.n_neighbors : "-"}`,
+            `min_dist: ${umapParams.min_dist !== undefined ? umapParams.min_dist : "-"}`,
+            `metric: ${umapParams.metric || "-"}`,
+            `spread: ${umapParams.spread !== undefined ? umapParams.spread : "-"}`,
+          ];
+          const paramsEl = document.createElement("div");
+          paramsEl.className = "history-params";
+          const dsLabel = datasets.length ? datasets.join(", ") : "datasets: none";
+          paramsEl.innerHTML = `${paramText.join(" | ")}<br>${dsLabel}`;
+          card.appendChild(paramsEl);
+
+          if (job.error) {
+            const errEl = document.createElement("div");
+            errEl.className = "history-params";
+            errEl.textContent = `error: ${job.error}`;
+            card.appendChild(errEl);
+          }
+
+          const actions = document.createElement("div");
+          actions.className = "history-actions";
+
+          const loadBtn = document.createElement("button");
+          loadBtn.className = "small";
+          loadBtn.textContent = "Load params";
+          loadBtn.addEventListener("click", () => {
+            applyParamsFromJob(params);
+            setActiveTab("run");
+            setStatus(`Loaded params from ${shortId}.`);
+          });
+          actions.appendChild(loadBtn);
+
+          if (status === "running" || status === "queued") {
+            const resumeBtn = document.createElement("button");
+            resumeBtn.className = "small";
+            resumeBtn.textContent = "Resume";
+            resumeBtn.addEventListener("click", () => {
+              currentJobId = job.id;
+              localStorage.setItem("umapJobId", job.id);
+              setActiveTab("run");
+              startPolling(job.id);
+            });
+            actions.appendChild(resumeBtn);
+          }
+
+          if (status === "done") {
+            const viewBtn = document.createElement("button");
+            viewBtn.className = "small";
+            viewBtn.textContent = "Load result";
+            viewBtn.addEventListener("click", () => {
+              setActiveTab("run");
+              loadJobResult(job.id);
+            });
+            actions.appendChild(viewBtn);
+          }
+
+          const htmlLink = document.createElement("a");
+          htmlLink.className = "history-link";
+          htmlLink.textContent = "HTML";
+          htmlLink.target = "_blank";
+          htmlLink.rel = "noopener";
+          if (status === "done" && job.result_html) {
+            htmlLink.href = `/job/${job.id}/html`;
+          } else {
+            htmlLink.classList.add("disabled");
+            htmlLink.href = "#";
+          }
+          actions.appendChild(htmlLink);
+
+          const pngLink = document.createElement("a");
+          pngLink.className = "history-link";
+          pngLink.textContent = "PNG";
+          pngLink.target = "_blank";
+          pngLink.rel = "noopener";
+          if (status === "done" && job.result_png) {
+            pngLink.href = `/job/${job.id}/png`;
+          } else {
+            pngLink.classList.add("disabled");
+            pngLink.href = "#";
+          }
+          actions.appendChild(pngLink);
+
+          card.appendChild(actions);
+          historyList.appendChild(card);
+        });
+      }
+
+      async function refreshHistory() {
+        try {
+          setHistoryStatus("Loading...");
+          const res = await fetch("/api/jobs");
+          if (!res.ok) {
+            throw new Error(await res.text());
+          }
+          const data = await res.json();
+          renderHistory(data.jobs || []);
+          setHistoryStatus("");
+        } catch (err) {
+          historyList.innerHTML = "";
+          const empty = document.createElement("div");
+          empty.className = "status";
+          empty.textContent = "Failed to load history.";
+          historyList.appendChild(empty);
+          setHistoryStatus("History load failed.");
+        }
       }
 
       document.getElementById("select-all").addEventListener("click", () => {
@@ -690,6 +1041,7 @@
 
       runBtn.addEventListener("click", runUmap);
       saveBtn.addEventListener("click", saveUmap);
+      refreshHistoryBtn.addEventListener("click", refreshHistory);
       datasetList.addEventListener("change", () => {
         setAutoName();
       });
@@ -708,17 +1060,28 @@
         }
       });
 
+      tabButtons.forEach(btn => {
+        btn.addEventListener("click", () => {
+          setActiveTab(btn.dataset.tab);
+        });
+      });
+
       syncSampleControls(parseFloat(sampleSlider.value));
 
       applyBootstrap();
       fetchDatasets().then(() => {
         setStatus("Ready.");
+        if (pendingParams) {
+          applyParamsFromJob(pendingParams);
+          pendingParams = null;
+        }
         const saved = localStorage.getItem("umapJobId");
         if (saved) {
           currentJobId = saved;
           startPolling(saved);
         }
       });
+      refreshHistory();
     </script>
   </body>
 </html>
