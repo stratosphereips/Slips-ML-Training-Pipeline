@@ -6,8 +6,12 @@ import io
 import json
 import sys
 import time
+import uuid
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlparse
 
 import numpy as np
 
@@ -76,6 +80,72 @@ def _adjust_color(rgb, factor):
     return tuple(max(0.0, min(1.0, c * factor)) for c in rgb)
 
 
+class JobStore:
+    def __init__(self, base_dir):
+        self.base_dir = Path(base_dir)
+        self.jobs_path = self.base_dir / "umap_jobs.json"
+        self.lock = threading.Lock()
+        self.jobs = {}
+        self._load()
+
+    def _load(self):
+        if not self.jobs_path.exists():
+            self.jobs = {}
+            return
+        try:
+            data = json.loads(self.jobs_path.read_text(encoding="utf-8"))
+        except Exception:
+            self.jobs = {}
+            return
+        if isinstance(data, list):
+            self.jobs = {j.get("id"): j for j in data if isinstance(j, dict)}
+        elif isinstance(data, dict):
+            self.jobs = data
+        else:
+            self.jobs = {}
+
+        for job in self.jobs.values():
+            if job.get("status") in ("queued", "running"):
+                job["status"] = "stale"
+                job["error"] = "Server restarted while job was running."
+        self._save()
+
+    def _save(self):
+        with self.lock:
+            data = list(self.jobs.values())
+            tmp = self.jobs_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            tmp.replace(self.jobs_path)
+
+    def create_job(self, params):
+        job_id = uuid.uuid4().hex
+        job = {
+            "id": job_id,
+            "status": "queued",
+            "created_at": time.time(),
+            "params": params,
+        }
+        self.jobs[job_id] = job
+        self._save()
+        return job_id
+
+    def update_job(self, job_id, **fields):
+        job = self.jobs.get(job_id)
+        if not job:
+            return
+        job.update(fields)
+        self.jobs[job_id] = job
+        self._save()
+
+    def get_job(self, job_id):
+        return self.jobs.get(job_id)
+
+    def list_jobs(self):
+        jobs = list(self.jobs.values())
+        jobs.sort(key=lambda j: j.get("created_at", 0), reverse=True)
+        return jobs
+
+
 class UMAPService:
     def __init__(self, config_path, output_dir):
         self.cfg_reader = ConfigReader(config_path)
@@ -85,6 +155,11 @@ class UMAPService:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.last_png = None
         self.last_summary = None
+        self.last_job_id = None
+        self.jobs_dir = self.output_dir / "jobs"
+        self.jobs_dir.mkdir(parents=True, exist_ok=True)
+        self.job_store = JobStore(self.output_dir)
+        self.executor = ThreadPoolExecutor(max_workers=1)
 
         ds_params = self.cfg_reader.get_dataset_loader_params()
         root = self.cfg.get("root")
@@ -117,6 +192,24 @@ class UMAPService:
         self.dataset_sizes = {
             name: int(len(loader)) for name, loader in self.loaders.items()
         }
+        if not self.dataset_keys:
+            # Fallback: list directories even if loaders failed (keeps UI usable).
+            try:
+                import re
+
+                prefix_regex = ds_params.get("prefix_regex", r"^\d{3}")
+                pattern = re.compile(prefix_regex)
+                self.dataset_keys = sorted(
+                    [
+                        d.name
+                        for d in root_path.iterdir()
+                        if d.is_dir() and pattern.match(d.name)
+                    ]
+                )
+                self.dataset_sizes = {name: 0 for name in self.dataset_keys}
+            except Exception:
+                self.dataset_keys = []
+                self.dataset_sizes = {}
         self._init_color_map()
 
     def _init_color_map(self):
@@ -439,17 +532,75 @@ class UMAPService:
 
         return png, summary, html
 
-    def save_last(self, name=None):
-        if self.last_png is None:
-            raise RuntimeError("No UMAP image has been generated yet.")
+    def start_job(self, params):
+        job_id = self.job_store.create_job(params)
+        self.executor.submit(self._run_job, job_id, params)
+        return job_id
 
-        png_bytes = self.last_png
-        if self.last_summary:
+    def _run_job(self, job_id, params):
+        try:
+            self.job_store.update_job(
+                job_id,
+                status="running",
+                started_at=time.time(),
+            )
+            selected = params.get("datasets") or []
+            sample = params.get("sample")
+            max_samples = params.get("max_samples")
+            umap_params = params.get("umap_params") or {}
+
+            png, summary, html = self.compute_umap(
+                selected,
+                sample,
+                max_samples=max_samples,
+                umap_params=umap_params,
+            )
+
+            job_dir = self.jobs_dir / job_id
+            job_dir.mkdir(parents=True, exist_ok=True)
+            png_path = job_dir / "umap.png"
+            png_path.write_bytes(png)
+            html_path = None
+            if html:
+                html_path = job_dir / "umap.html"
+                html_path.write_text(html, encoding="utf-8")
+
+            self.last_job_id = job_id
+            self.job_store.update_job(
+                job_id,
+                status="done",
+                finished_at=time.time(),
+                summary=summary,
+                result_png=str(png_path),
+                result_html=str(html_path) if html_path else None,
+            )
+        except Exception as exc:
+            self.job_store.update_job(
+                job_id,
+                status="error",
+                finished_at=time.time(),
+                error=str(exc),
+            )
+
+    def save_last(self, name=None):
+        if not self.last_job_id:
+            raise RuntimeError("No UMAP job has completed yet.")
+        return self.save_job(self.last_job_id, name=name)
+
+    def save_job(self, job_id, name=None):
+        job = self.job_store.get_job(job_id)
+        if not job or job.get("status") != "done":
+            raise RuntimeError("Requested job is not complete.")
+        png_path = job.get("result_png")
+        if not png_path:
+            raise RuntimeError("No image found for this job.")
+        png_bytes = Path(png_path).read_bytes()
+        if job.get("summary"):
             try:
-                png_bytes = self._annotate_png(png_bytes, self.last_summary)
+                png_bytes = self._annotate_png(png_bytes, job.get("summary"))
             except Exception:
                 # fall back to raw image on annotation failure
-                png_bytes = self.last_png
+                png_bytes = png_bytes
 
         safe_name = None
         if name:
@@ -469,7 +620,15 @@ class UMAPService:
 
         out_path = self.output_dir / safe_name
         out_path.write_bytes(png_bytes)
-        return str(out_path)
+        html_out = None
+        html_path = job.get("result_html")
+        if html_path and Path(html_path).exists():
+            html_out = out_path.with_suffix(".html")
+            html_out.write_text(
+                Path(html_path).read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+        return {"png": str(out_path), "html": str(html_out) if html_out else None}
 
     def _annotate_png(self, png_bytes, summary):
         import matplotlib.pyplot as plt
@@ -542,7 +701,8 @@ class UMAPService:
 
 class RequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path == "/":
+        parsed = urlparse(self.path)
+        if parsed.path == "/":
             if not HTML_PATH.exists():
                 self._send_text(500, "Missing umap_web.html")
                 return
@@ -563,7 +723,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 )
             self._send_text(200, html, content_type="text/html")
             return
-        if self.path == "/api/datasets":
+        if parsed.path == "/api/datasets":
             payload = {
                 "datasets": [
                     {"name": name, "count": self.server.app.dataset_sizes.get(name, 0)}
@@ -574,10 +734,49 @@ class RequestHandler(BaseHTTPRequestHandler):
             }
             self._send_json(200, payload)
             return
+        if parsed.path == "/api/jobs":
+            payload = {"jobs": self.server.app.job_store.list_jobs()}
+            self._send_json(200, payload)
+            return
+        if parsed.path.startswith("/api/job/"):
+            parts = parsed.path.strip("/").split("/")
+            if len(parts) >= 3:
+                job_id = parts[2]
+                if len(parts) == 3:
+                    job = self.server.app.job_store.get_job(job_id)
+                    if not job:
+                        self._send_text(404, "Job not found")
+                        return
+                    self._send_json(200, job)
+                    return
+                if len(parts) == 4 and parts[3] == "result":
+                    job = self.server.app.job_store.get_job(job_id)
+                    if not job:
+                        self._send_text(404, "Job not found")
+                        return
+                    if job.get("status") != "done":
+                        self._send_text(400, "Job not finished")
+                        return
+                    png_path = job.get("result_png")
+                    html_path = job.get("result_html")
+                    data_url = None
+                    if png_path and Path(png_path).exists():
+                        png_bytes = Path(png_path).read_bytes()
+                        b64 = base64.b64encode(png_bytes).decode("ascii")
+                        data_url = f"data:image/png;base64,{b64}"
+                    html = None
+                    if html_path and Path(html_path).exists():
+                        html = Path(html_path).read_text(encoding="utf-8")
+                    self._send_json(
+                        200,
+                        {"image": data_url, "summary": job.get("summary"), "html": html},
+                    )
+                    return
         self._send_text(404, "Not found")
 
     def do_POST(self):
-        if self.path == "/api/save":
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/save":
             length = int(self.headers.get("Content-Length", 0))
             raw = self.rfile.read(length) if length > 0 else b"{}"
             try:
@@ -586,15 +785,22 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self._send_text(400, "Invalid JSON body")
                 return
             name = payload.get("name")
+            job_id = payload.get("job_id")
             try:
-                path = self.server.app.save_last(name=name)
+                if job_id:
+                    path = self.server.app.save_job(job_id, name=name)
+                else:
+                    path = self.server.app.save_last(name=name)
             except Exception as exc:
                 self._send_text(500, f"Save failed: {exc}")
                 return
-            self._send_json(200, {"path": path})
+            if isinstance(path, dict):
+                self._send_json(200, {"path": path.get("png"), "html": path.get("html")})
+            else:
+                self._send_json(200, {"path": path})
             return
 
-        if self.path != "/api/umap":
+        if parsed.path != "/api/umap":
             self._send_text(404, "Not found")
             return
         length = int(self.headers.get("Content-Length", 0))
@@ -613,25 +819,14 @@ class RequestHandler(BaseHTTPRequestHandler):
 
         max_samples = payload.get("max_samples")
         umap_params = payload.get("umap_params")
-        try:
-            png, summary, html = self.server.app.compute_umap(
-                selected,
-                sample,
-                max_samples=max_samples,
-                umap_params=umap_params,
-            )
-        except Exception as exc:
-            self._send_text(500, f"UMAP failed: {exc}")
-            return
-
-        data_url = None
-        if png is not None:
-            b64 = base64.b64encode(png).decode("ascii")
-            data_url = f"data:image/png;base64,{b64}"
-        self._send_json(
-            200,
-            {"image": data_url, "summary": summary, "html": html},
-        )
+        job_params = {
+            "datasets": selected,
+            "sample": sample,
+            "max_samples": max_samples,
+            "umap_params": umap_params,
+        }
+        job_id = self.server.app.start_job(job_params)
+        self._send_json(202, {"job_id": job_id})
 
     def log_message(self, fmt, *args):
         return
