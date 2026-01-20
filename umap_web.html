@@ -277,7 +277,9 @@
           <button id="select-all" class="ghost">Select all</button>
           <button id="clear-all" class="ghost">Clear</button>
         </div>
-        <div id="dataset-list" class="dataset-list"></div>
+        <div id="dataset-list" class="dataset-list">
+          <div class="status">Loading datasets...</div>
+        </div>
 
         <div>
           <h2>Sample (%)</h2>
@@ -375,6 +377,9 @@
       const imgEl = document.getElementById("umap-image");
       const frameEl = document.getElementById("umap-frame");
       const summaryEl = document.getElementById("run-summary");
+      let currentJobId = null;
+      let lastCompletedJobId = null;
+      let pollTimer = null;
 
       function setStatus(msg) {
         statusEl.textContent = msg;
@@ -539,7 +544,7 @@
         }
         setAutoName();
         runBtn.disabled = true;
-        setStatus("Running UMAP...");
+        setStatus("Starting UMAP job...");
         summaryEl.textContent = "";
         const sample = samplePercent / 100.0;
         const maxSamples = getMaxSamples();
@@ -561,16 +566,30 @@
           return;
         }
         const data = await res.json();
-        if (data.html) {
-          frameEl.srcdoc = data.html;
-          frameEl.style.display = "block";
-          imgEl.style.display = "none";
-        } else if (data.image) {
-          imgEl.src = data.image;
-          imgEl.style.display = "block";
-          frameEl.style.display = "none";
+        currentJobId = data.job_id;
+        localStorage.setItem("umapJobId", currentJobId);
+        setStatus(`Job ${currentJobId} queued...`);
+        startPolling(currentJobId);
+        runBtn.disabled = false;
+      }
+
+      async function fetchJob(jobId) {
+        const res = await fetch(`/api/job/${jobId}`);
+        if (!res.ok) {
+          throw new Error(await res.text());
         }
-        const summary = data.summary || {};
+        return await res.json();
+      }
+
+      async function fetchJobResult(jobId) {
+        const res = await fetch(`/api/job/${jobId}/result`);
+        if (!res.ok) {
+          throw new Error(await res.text());
+        }
+        return await res.json();
+      }
+
+      function updateSummary(summary) {
         const total = summary.total_points || 0;
         const duration = summary.duration_sec || 0;
         const counts = summary.counts || {};
@@ -583,8 +602,46 @@
           lines.push(`${name}: ${t} (B ${b} / M ${m})`);
         });
         summaryEl.innerHTML = lines.join("<br>");
-        setStatus("Ready.");
-        runBtn.disabled = false;
+      }
+
+      async function startPolling(jobId) {
+        if (pollTimer) {
+          clearInterval(pollTimer);
+        }
+        async function pollOnce() {
+          try {
+            const job = await fetchJob(jobId);
+            if (job.status === "done") {
+              clearInterval(pollTimer);
+              pollTimer = null;
+              lastCompletedJobId = jobId;
+              const result = await fetchJobResult(jobId);
+              if (result.html) {
+                frameEl.srcdoc = result.html;
+                frameEl.style.display = "block";
+                imgEl.style.display = "none";
+              } else if (result.image) {
+                imgEl.src = result.image;
+                imgEl.style.display = "block";
+                frameEl.style.display = "none";
+              }
+              if (result.summary) {
+                updateSummary(result.summary);
+              }
+              setStatus(`Job ${jobId} done.`);
+            } else if (job.status === "error" || job.status === "stale") {
+              clearInterval(pollTimer);
+              pollTimer = null;
+              setStatus(`Job ${jobId} failed: ${job.error || "unknown error"}`);
+            } else {
+              setStatus(`Job ${jobId} ${job.status}...`);
+            }
+          } catch (err) {
+            setStatus(`Job ${jobId} status error.`);
+          }
+        }
+        await pollOnce();
+        pollTimer = setInterval(pollOnce, 3000);
       }
 
       async function saveUmap() {
@@ -595,7 +652,7 @@
         const res = await fetch("/api/save", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name })
+          body: JSON.stringify({ name, job_id: lastCompletedJobId || currentJobId })
         });
         if (!res.ok) {
           const text = await res.text();
@@ -604,7 +661,8 @@
           return;
         }
         const data = await res.json();
-        setStatus(`Saved: ${data.path || "done"}`);
+        const msg = data.html ? `Saved: ${data.path} (html: ${data.html})` : `Saved: ${data.path || "done"}`;
+        setStatus(msg);
         saveBtn.disabled = false;
       }
 
@@ -655,6 +713,11 @@
       applyBootstrap();
       fetchDatasets().then(() => {
         setStatus("Ready.");
+        const saved = localStorage.getItem("umapJobId");
+        if (saved) {
+          currentJobId = saved;
+          startPolling(saved);
+        }
       });
     </script>
   </body>
