@@ -14,6 +14,9 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import numpy as np
+import importlib.util
+import importlib.machinery
+import types
 
 # Ensure local src/ is importable as a package when running from this folder.
 ROOT = Path(__file__).resolve().parent
@@ -25,8 +28,38 @@ from src.features import FeatureExtraction
 from src.preprocessing_wrapper import PreprocessingWrapper
 from src.class_factory import get_transformer_class
 
+def _load_umap_class():
+    """
+    Load UMAP without importing umap.__init__ (which pulls tensorflow).
+    """
+    for base in sys.path:
+        try:
+            candidate = Path(base) / "umap" / "umap_.py"
+        except Exception:
+            continue
+        if not candidate.exists():
+            continue
+        pkg_name = "umap"
+        if pkg_name not in sys.modules:
+            pkg = types.ModuleType(pkg_name)
+            pkg.__path__ = [str(candidate.parent)]
+            sys.modules[pkg_name] = pkg
+        name = "umap.umap_"
+        loader = importlib.machinery.SourceFileLoader(name, str(candidate))
+        spec = importlib.util.spec_from_loader(name, loader)
+        if spec is None:
+            continue
+        module = importlib.util.module_from_spec(spec)
+        module.__package__ = "umap"
+        sys.modules[name] = module
+        loader.exec_module(module)
+        if hasattr(module, "UMAP"):
+            return module.UMAP
+    raise ImportError("umap-learn not installed")
+
+
 try:
-    from umap import UMAP
+    UMAP = _load_umap_class()
 except Exception as exc:
     print("ERROR: umap-learn is required. Install with: pip install umap-learn")
     raise SystemExit(1) from exc
