@@ -73,30 +73,33 @@ commands:
   - name: "train_seq" # command name
     command: "train" # train/test
     type: "oversampling"
-            
+
     # Label configuration
     labels: ["Benign", "Malicious"]
-            
+
     # Balance specification (fractions must sum to 1.0)
     balance:
       Benign: 0.9
       Malicious: 0.1
-  
+
     # Alternative balance formats (uncomment to use):
     # balance: [0.9, 0.1]  # List format (maps to labels in order)
     # balance: null  # Equal fractions for all labels
-    
+
     # Round-robin configuration
     round_robin_cycles: 12  # Default: 8, higher = more fresh data attempts
-    
+
     # Memory management
     stash_size_per_label: 800  # Default: 500, historical samples for diversity
     buffer_size_per_label: 1500  # Default: 1000, unused samples queue
-    
+
     # Pull configuration
     micro_batch: 32  # Default: 16, chunk size when pulling from loaders
     # Datasets to mix
-    datasets: ["001", "008", "009", "010", "011", "012", "013", "014", "015", "016", "017", "022", "023", "024", "027", "028", "029", "032", "033", "034"]
+    datasets: ["001", "008", "009", "010", "011", "012",
+               "013", "014", "015", "016", "017", "022",
+               "023", "024", "027", "028", "029", "032",
+               "033", "034"]
 
 
   - name: "test_all"
@@ -105,6 +108,7 @@ commands:
       type: "sequence"
       # in sequence, drain all of the datasets to the end,
       # then begin with a new one  BUT here TEST ALL
-      datasets: ["001", "008", "009", "010", "011", "012", "013", "014", "015", "016", "017", "018", "020", "021", "025", "026", "030", "031", "035", "036", "037"]
-
-
+      datasets: ["001", "008", "009", "010", "011", "012",
+                 "013", "014", "015", "016", "017", "018",
+                 "020", "021", "025", "026", "030", "031",
+                 "035", "036", "037"]
