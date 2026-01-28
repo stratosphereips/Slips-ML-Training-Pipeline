@@ -17,6 +17,8 @@ try:
 except Exception:
     pd = None
 
+from collections import deque
+
 # -------------------------
 # helpers
 # -------------------------
@@ -443,6 +445,7 @@ class BalancedByLabelMixer(DefaultMixer):
                 self.labels = ["Benign", "Malicious"]
             else:
                 self.labels = sorted(list(labels_set))
+                print("labels discovered by balanced mixer: ", self.labels)
         # init buffers map
         for lbl in self.labels:
             self.buffers.setdefault(lbl, [])
@@ -659,7 +662,7 @@ class BalancedByLabelMixer(DefaultMixer):
             ds_idx = 0
             attempts = 0
             per_ds_want = int(np.ceil(float(max(1, need)) / max(1, len(self.datasets))))
-            while need > 0 and attempts < len(self.datasets) * 4:
+            while need > 0 and attempts < len(self.datasets) * 8:
                 key = self.datasets[ds_idx % len(self.datasets)]
                 want = min(per_ds_want, need)
                 chunk = self._pull_for_label_from_loader(key, lbl, want)
@@ -700,3 +703,532 @@ class BalancedByLabelMixer(DefaultMixer):
         last["train_count"] = batch_len(train) if train is not None else 0
         last["val_count"] = batch_len(val) if val is not None else 0
         return train, val
+
+# -------------------------
+# BalancedByLabelWithOversamplingMixer
+# -------------------------
+
+
+class BalancedByLabelWithOversamplingMixer(DefaultMixer):
+    """
+    Produce batches balanced by label with oversampling when needed.
+    
+    Strategy:
+    1. Maintain per-label buffers of unused samples from previous pulls
+    2. Try to pull fresh data via round-robin (configurable cycles)  
+    3. ALL samples from pulls are separated by label:
+       - Needed samples go to current batch
+       - Excess samples go to buffers for future use
+    4. When quota not met after round-robin, resample from (fresh_collected + buffer + stash)
+    5. Maintain a rolling stash for diversity
+    
+    Example: Need 450 Benign, 50 Malicious
+    - Pull chunk with 5 Benign, 95 Malicious
+    - Take 5 Benign for batch, buffer 0
+    - Take 50 Malicious for batch, buffer remaining 45 Malicious
+    - Next batch: use buffered 45 Malicious first, only need 5 more
+    
+    Spec keys:
+      - type: "balanced_oversampling"
+      - datasets: [list]   (required)
+      - labels: optional list of label values
+      - balance: optional dict/list (label->fraction)
+      - validation_split: optional float
+      - round_robin_cycles: optional int (default 8)
+      - stash_size_per_label: optional int (max samples to keep per label, default 500)
+      - buffer_size_per_label: optional int (max buffered samples, default 1000)
+      - micro_batch: optional int (pull size when searching, default 16)
+    
+    example config:
+    commands:
+        - name: "train_seq" # command name
+            command: "train" # train/test
+            type: "oversampling"
+            
+            # Label configuration
+            labels: ["Benign", "Malicious"]
+            
+            # Balance specification (fractions must sum to 1.0)
+            balance:
+                Benign: 0.9
+                Malicious: 0.1
+            
+            # Alternative balance formats (uncomment to use):
+            # balance: [0.9, 0.1]  # List format (maps to labels in order)
+            # balance: null  # Equal fractions for all labels
+            
+            # Round-robin configuration
+            round_robin_cycles: 12  # Default: 8, higher = more fresh data attempts
+            
+            # Memory management
+            stash_size_per_label: 800  # Default: 500, historical samples for diversity
+            buffer_size_per_label: 1500  # Default: 1000, unused samples queue
+            
+            # Pull configuration
+            micro_batch: 32  # Default: 16, chunk size when pulling from loaders
+            
+            # Datasets to mix
+            datasets: ["001", "008", "009", "010",]
+    """
+    
+    def __init__(self, spec, loaders, rng):
+        super().__init__(spec, loaders, rng)
+        ds = spec.get("datasets") or []
+        if not ds:
+            raise ValueError("balanced_oversampling requires 'datasets'")
+        self.datasets = [self.resolve_key(k) for k in ds]
+        self.provided_labels = spec.get("labels")
+        self.micro = int(spec.get("micro_batch", 16))
+        self.balance_spec = spec.get("balance") or spec.get("balance_list") or spec.get("balance_dict")
+        self.round_robin_cycles = int(spec.get("round_robin_cycles", 8))
+        self.stash_size = int(spec["stash_size_per_label"])
+        self.buffer_size = int(spec["buffer_size_per_label"])
+        
+        # Buffers: immediate queue of unused samples (FIFO, used first)
+        # Stashes: rolling history for diversity (used for resampling if buffer insufficient)
+        self.buffers = {}
+        self.stashes = {}
+        self.labels = []
+        
+        if "validation_split" in spec:
+            self.validation_split = float(spec.get("validation_split", 0.0))
+    
+    def reset_epoch(self, batch_size, epoch_idx=0):
+        super().reset_epoch(batch_size, epoch_idx)
+        
+        # Reset loaders
+        for k in self.datasets:
+            loader = self.loaders[k]
+            self.reset_loader(loader, batch_size)
+        
+        # Discover or set labels
+        if self.provided_labels:
+            self.labels = [lab for lab in list(self.provided_labels) if lab is not None]
+        else:
+            self.labels = self._discover_labels()
+        
+        # Initialize buffers and stashes
+        self.buffers = {
+            lbl: deque(maxlen=self.buffer_size) for lbl in self.labels
+        }
+        self.stashes = {
+            lbl: deque(maxlen=self.stash_size) for lbl in self.labels
+        }
+        
+        # Parse balance spec
+        self.balance_map = self._parse_balance_spec(self.balance_spec, self.labels)
+    
+    def _discover_labels(self):
+        """Discover labels by peeking at data."""
+        labels_set = set()
+        for k in self.datasets:
+            loader = self.loaders[k]
+            b = None
+            if hasattr(loader, "next_n"):
+                try:
+                    b = loader.next_n(self.micro)
+                except Exception:
+                    b = None
+            if b is None:
+                try:
+                    b = loader.next_batch()
+                except Exception:
+                    b = None
+            if b is None:
+                continue
+            
+            if is_dataframe(b):
+                if "label" in b.columns:
+                    vals = b["label"].dropna().unique().tolist()
+                    for v in vals:
+                        if v is not None:
+                            labels_set.add(v)
+            else:
+                for rec in b:
+                    try:
+                        lbl = rec.get("label")
+                    except Exception:
+                        lbl = None
+                    if lbl is not None:
+                        labels_set.add(lbl)
+        
+        # Reset loaders after peeking
+        for k in self.datasets:
+            loader = self.loaders[k]
+            self.reset_loader(loader, self.batch_size)
+        
+        if not labels_set:
+            return ["Benign", "Malicious"]  # fallback
+        return sorted(list(labels_set))
+    
+    def _parse_balance_spec(self, spec_value, labels):
+        """Parse balance specification into normalized fractions."""
+        n = len(labels)
+        if spec_value is None:
+            return {lbl: 1.0 / max(1, n) for lbl in labels}
+        
+        if isinstance(spec_value, dict):
+            out = {}
+            for lbl in labels:
+                out[lbl] = float(spec_value.get(lbl, 0.0))
+            total = sum(out.values())
+            if total <= 0:
+                return {lbl: 1.0 / max(1, n) for lbl in labels}
+            return {lbl: v / total for lbl, v in out.items()}
+        
+        if isinstance(spec_value, (list, tuple)):
+            vals = list(spec_value)
+            if len(vals) == len(labels):
+                arr = np.asarray([float(x) for x in vals], dtype=float)
+                s = arr.sum()
+                if s <= 0:
+                    return {lbl: 1.0 / max(1, n) for lbl in labels}
+                arr = arr / s
+                return {lbl: float(arr[i]) for i, lbl in enumerate(labels)}
+            arr = np.asarray([float(x) for x in vals], dtype=float)
+            if arr.size == 0:
+                return {lbl: 1.0 / max(1, n) for lbl in labels}
+            arr = arr / arr.sum()
+            out = {}
+            for i, lbl in enumerate(labels):
+                out[lbl] = float(arr[i % arr.size])
+            s = sum(out.values())
+            if s <= 0:
+                return {lbl: 1.0 / max(1, n) for lbl in labels}
+            return {lbl: v / s for lbl, v in out.items()}
+        
+        return {lbl: 1.0 / max(1, n) for lbl in labels}
+    
+    def _extract_records_from_batch(self, batch):
+        """Convert a batch into individual records (list of dicts)."""
+        if batch is None:
+            return []
+        
+        if is_dataframe(batch):
+            return batch.to_dict('records')
+        else:
+            return list(batch)
+    
+    def _records_to_batch(self, records):
+        """Convert list of record dicts back to batch format."""
+        if not records:
+            return None
+        return records
+    
+    def _separate_by_label(self, batch):
+        """
+        Separate a batch into per-label record lists.
+        Optimized: Single-pass separation using groupby for DataFrames.
+        Returns dict: {label: [records]}
+        """
+        result = {lbl: [] for lbl in self.labels}
+        
+        if batch is None:
+            return result
+        
+        if is_dataframe(batch):
+            if "label" in batch.columns:
+                # Single-pass groupby instead of multiple filters
+                try:
+                    grouped = batch.groupby('label', sort=False)
+                    for lbl, group in grouped:
+                        if lbl in result:
+                            result[lbl] = group.to_dict('records')
+                except Exception:
+                    # Fallback to old method if groupby fails
+                    for lbl in self.labels:
+                        sel = batch[batch["label"] == lbl]
+                        if len(sel) > 0:
+                            result[lbl] = sel.to_dict('records')
+        else:
+            # Single-pass for list of dicts
+            for rec in batch:
+                try:
+                    lbl = rec.get("label")
+                    if lbl in result:
+                        result[lbl].append(rec)
+                except Exception:
+                    continue
+        
+        return result
+    
+    def _consume_from_buffer(self, label, want):
+        """
+        Consume up to `want` samples from buffer for `label`.
+        Returns list of records, updates buffer.
+        """
+        if want <= 0:
+            return []
+        
+        buffer = self.buffers[label]
+        consumed = []
+        
+        for _ in range(min(want, len(buffer))):
+            consumed.append(buffer.popleft())
+        
+        return consumed
+    
+    def _add_to_buffer_and_stash(self, label, records):
+        """
+        Add records to buffer (priority queue) and stash (history).
+        Buffer gets used first, stash is for diversity in resampling.
+        Optimized: Uses extend for batch operations.
+        """
+        if not records:
+            return
+        
+        # Batch extend is more efficient than appending one-by-one
+        self.buffers[label].extend(records)
+        self.stashes[label].extend(records)
+    
+    def _pull_and_separate_chunk(self, dataset_key):
+        """
+        Pull one chunk from dataset and separate by label.
+        Returns dict: {label: [records]} for all labels found in chunk.
+        """
+        loader = self.loaders[dataset_key]
+        
+        chunk = None
+        if hasattr(loader, "next_n"):
+            try:
+                chunk = loader.next_n(self.micro)
+            except Exception:
+                pass
+        if chunk is None:
+            try:
+                chunk = loader.next_batch()
+            except Exception:
+                pass
+        
+        if chunk is None:
+            return {lbl: [] for lbl in self.labels}
+        
+        return self._separate_by_label(chunk)
+    
+    def _collect_fresh_for_label(self, label, want):
+        """
+        Collect fresh data for a specific label via round-robin.
+        
+        Process:
+        1. First, drain buffer if available
+        2. Then, pull chunks via round-robin
+        3. For each chunk: separate by label
+           - Wanted label: add to collection (up to quota)
+           - Other labels: add ALL to their buffers
+        4. Return what was collected + stats
+        
+        Returns: (collected_records, from_buffer_count, from_fresh_count)
+        """
+        collected = []
+        from_buffer = 0
+        from_fresh = 0
+        
+        # Step 1: Consume from buffer first
+        buffered = self._consume_from_buffer(label, want)
+        collected.extend(buffered)
+        from_buffer = len(buffered)
+        remaining = want - len(collected)
+        
+        if remaining <= 0:
+            return collected, from_buffer, from_fresh
+        
+        # Step 2: Pull fresh via round-robin
+        ds_idx = 0
+        attempts = 0
+        max_attempts = len(self.datasets) * self.round_robin_cycles
+        
+        while remaining > 0 and attempts < max_attempts:
+            key = self.datasets[ds_idx % len(self.datasets)]
+            
+            # Pull and separate chunk
+            by_label = self._pull_and_separate_chunk(key)
+            
+            # Process wanted label
+            wanted_records = by_label.get(label, [])
+            if wanted_records:
+                take = min(remaining, len(wanted_records))
+                collected.extend(wanted_records[:take])
+                from_fresh += take
+                remaining -= take
+                
+                # Buffer the excess
+                excess = wanted_records[take:]
+                if excess:
+                    self._add_to_buffer_and_stash(label, excess)
+            
+            # Buffer ALL other labels (they're "free" - don't waste them!)
+            for other_lbl in self.labels:
+                if other_lbl != label:
+                    other_records = by_label.get(other_lbl, [])
+                    if other_records:
+                        self._add_to_buffer_and_stash(other_lbl, other_records)
+            
+            ds_idx += 1
+            attempts += 1
+        
+        return collected, from_buffer, from_fresh
+    
+    def _resample_to_fill(self, label, want, collected_fresh):
+        """
+        Resample with replacement to fill remaining quota.
+        
+        Resampling pool = collected_fresh + buffer + stash
+        Optimized: Only copy non-empty sources.
+        
+        Returns: list of resampled records
+        """
+        if want <= 0:
+            return []
+        
+        # Build pool only from non-empty sources
+        pool = []
+        
+        if collected_fresh:
+            pool.extend(collected_fresh)
+        
+        if self.buffers[label]:
+            pool.extend(self.buffers[label])
+        
+        if self.stashes[label]:
+            pool.extend(self.stashes[label])
+        
+        if not pool:
+            return []
+        
+        # Batch sample with replacement (most efficient)
+        n_available = len(pool)
+        indices = self.rng.choice(n_available, size=want, replace=True)
+        resampled = [pool[i] for i in indices]
+        
+        return resampled
+    
+    def next_batch(self):
+        if self.batch_size is None:
+            raise RuntimeError("reset_epoch must be called first")
+        
+        if not self.labels:
+            self.labels = ["Benign", "Malicious"]
+            self.buffers = {lbl: deque(maxlen=self.buffer_size) for lbl in self.labels}
+            self.stashes = {lbl: deque(maxlen=self.stash_size) for lbl in self.labels}
+            self.balance_map = self._parse_balance_spec(self.balance_spec, self.labels)
+        
+        B = int(self.batch_size)
+        if B <= 0:
+            return None, None
+        
+        # Compute target counts per label
+        fracs = [self.balance_map.get(lbl, 0.0) for lbl in self.labels]
+        raw_counts = [float(f) * B for f in fracs]
+        int_counts = [int(np.floor(c)) for c in raw_counts]
+        rem = B - sum(int_counts)
+        
+        # Distribute remainder
+        frac_parts = [(i, raw_counts[i] - int_counts[i]) for i in range(len(self.labels))]
+        frac_parts.sort(key=lambda x: x[1], reverse=True)
+        for i in range(rem):
+            idx = frac_parts[i % len(frac_parts)][0]
+            int_counts[idx] += 1
+        
+        # Collect samples for each label
+        all_records = []
+        stats = {}
+        
+        for i, lbl in enumerate(self.labels):
+            need = int_counts[i]
+            if need <= 0:
+                stats[lbl] = {
+                    "from_buffer": 0,
+                    "from_fresh": 0,
+                    "resampled": 0,
+                    "total": 0,
+                    "buffer_size": len(self.buffers[lbl]),
+                    "stash_size": len(self.stashes[lbl])
+                }
+                continue
+            
+            # Collect fresh (buffer + round-robin)
+            collected, from_buffer, from_fresh = self._collect_fresh_for_label(lbl, need)
+            all_records.extend(collected)
+            remaining = need - len(collected)
+            
+            # Resample if needed
+            resampled_count = 0
+            if remaining > 0:
+                resampled = self._resample_to_fill(lbl, remaining, collected)
+                all_records.extend(resampled)
+                resampled_count = len(resampled)
+            
+            stats[lbl] = {
+                "from_buffer": from_buffer,
+                "from_fresh": from_fresh,
+                "resampled": resampled_count,
+                "total": len(collected) + resampled_count,
+                "buffer_size": len(self.buffers[lbl]),
+                "stash_size": len(self.stashes[lbl])
+            }
+        
+        if not all_records:
+            return None, None
+        
+        # Shuffle to mix labels
+        self.rng.shuffle(all_records)
+        
+        # Convert back to batch format
+        batch = self._records_to_batch(all_records)
+        
+        # Record mix plan
+        self.mix_plan.append({
+            "type": "balanced_oversampling",
+            "stats_by_label": stats
+        })
+        
+        # Split into train/val
+        train, val = self._split_batch(batch)
+        
+        last = self.mix_plan[-1]
+        last["train_count"] = batch_len(train) if train is not None else 0
+        last["val_count"] = batch_len(val) if val is not None else 0
+        
+        return train, val
+
+
+# Helper functions (assuming these exist elsewhere in your codebase)
+def is_dataframe(obj):
+    """Check if object is a pandas DataFrame."""
+    return hasattr(obj, 'columns') and hasattr(obj, 'iloc')
+
+def batch_len(batch):
+    """Return length of batch (works for DataFrame or list)."""
+    if batch is None:
+        return 0
+    if is_dataframe(batch):
+        return len(batch)
+    return len(batch)
+
+def concat_batches(batches):
+    """Concatenate list of batches."""
+    if not batches:
+        return None
+    valid = [b for b in batches if b is not None and batch_len(b) > 0]
+    if not valid:
+        return None
+    if len(valid) == 1:
+        return valid[0]
+    
+    if is_dataframe(valid[0]):
+        import pandas as pd
+        return pd.concat(valid, ignore_index=True)
+    else:
+        result = []
+        for b in valid:
+            result.extend(b)
+        return result
+
+def slice_batch(batch, start, end):
+    """Slice batch from start to end index."""
+    if batch is None:
+        return None
+    if is_dataframe(batch):
+        return batch.iloc[start:end].reset_index(drop=True)
+    else:
+        return batch[start:end]

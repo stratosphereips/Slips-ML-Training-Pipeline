@@ -86,7 +86,6 @@ class ConfigReader:
     def _validate_commands(self, cfg: dict):
         if not isinstance(cfg.get("commands"), list):
             raise ValueError("'commands' must be a list")
-        allowed_mixers = {"sequence", "random_batches", "balanced_by_label"}
         for i, cmd in enumerate(cfg.get("commands", [])):
             if not isinstance(cmd, dict):
                 raise ValueError(f"commands[{i}] must be a mapping")
@@ -97,8 +96,6 @@ class ConfigReader:
             if not isinstance(mixer, dict):
                 raise ValueError(f"commands[{i}].mixer is required and must be a mapping")
             mtype = mixer.get("type")
-            if mtype not in allowed_mixers:
-                raise ValueError(f"commands[{i}].mixer.type must be one of {sorted(allowed_mixers)}")
             # Do not allow per-command batch_size; top-level sizes only
             if "batch_size" in cmd:
                 raise ValueError(f"Do not set commands[{i}].batch_size — use top-level batch_size_train/test")
