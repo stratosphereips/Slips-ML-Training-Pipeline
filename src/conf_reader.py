@@ -95,7 +95,6 @@ class ConfigReader:
             mixer = cmd.get("mixer")
             if not isinstance(mixer, dict):
                 raise ValueError(f"commands[{i}].mixer is required and must be a mapping")
-            mtype = mixer.get("type")
             # Do not allow per-command batch_size; top-level sizes only
             if "batch_size" in cmd:
                 raise ValueError(f"Do not set commands[{i}].batch_size — use top-level batch_size_train/test")

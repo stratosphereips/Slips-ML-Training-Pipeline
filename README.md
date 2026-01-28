@@ -138,6 +138,14 @@ pytest
 ```
 
 ---
+# Developement
+- If you want to add features, create an issue, or fork the repository and create a pull request with your new code.
+- For the PR to be merged, we need all tests to be passing and pre-commit working without errors.
+- Pre-commit runs linters and some checks based on the config. Here we use it to keep some code quality. If you want to contribute,
+```bash
+pre-commit install
+pre-commit run --all-files
+```
 
 ## Extending the Pipeline
 
