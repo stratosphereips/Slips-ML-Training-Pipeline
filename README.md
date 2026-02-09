@@ -9,7 +9,7 @@ python run.py /path/to/config_or_config_dir
 
 If you omit the argument the pipeline will look for a config in the current directory (`.`).
 
-Results are written under `experiments/<experiment_name>` (see *Output*).
+Results are written under `experiments/<experiment_name>`, but if a folder with the same name already exists, a numeric suffix is appended (e.g., `<experiment_name>_1`, `<experiment_name>_2`, etc.) to ensure previous results are not overwritten. The experiment folder name is generated centrally from the config and passed to all pipeline modules. Inner file names and subdirectory structures remain unchanged.
 
 ---
 
