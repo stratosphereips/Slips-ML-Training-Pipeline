@@ -4,6 +4,7 @@ import json
 import subprocess
 from pathlib import Path
 import numpy as np
+import inspect
 
 
 try:
@@ -166,6 +167,7 @@ class BuildManager:
         self.preprocessor = prep
         return self.preprocessor
 
+
     def build_classifier(self):
         spec = self.cfg_reader.get_model_spec()
         cls_type = spec.get("classifier_type") or spec.get("type")
@@ -187,6 +189,18 @@ class BuildManager:
         classifier_obj = None
         if cls_type:
             Cls = get_classifier_class(cls_type)
+
+            seed = int(self.cfg_reader.get_random_seed())
+            # Common randomness-related parameter names
+            seed_keys = ["rng", "random", "seed", "random_seed", "state", "random_state"]
+            try:
+                sig = inspect.signature(Cls)
+                for key in seed_keys:
+                    if key in sig.parameters and key not in params:
+                        params[key] = seed
+            except Exception:
+                # If signature inspection fails, skip injection
+                pass
             try:
                 classifier_obj = Cls(**params)
             except Exception:
