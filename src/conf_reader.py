@@ -147,7 +147,13 @@ class ConfigReader:
         paths.setdefault("experiment_dir", "./experiments")
         exp_name = effective_config["experiment_name"]
         base_experiments = Path(paths["experiment_dir"])
-        paths["experiment_dir_resolved"] = str((base_experiments / exp_name).resolve())
+        # Find unique experiment directory name
+        exp_dir = base_experiments / exp_name
+        suffix = 0
+        while exp_dir.exists():
+            suffix += 1
+            exp_dir = base_experiments / f"{exp_name}_{suffix}"
+        paths["experiment_dir_resolved"] = str(exp_dir.resolve())
         effective_config["paths"] = paths
 
         # ------------------------------
