@@ -115,9 +115,11 @@ def get_classifier_class(classifier_type: str):
 
     # try a small set of river modules (if installed)
     river_modules = [
+        # If cannot find, add new submobules
         "river.tree",
         "river.ensemble",
         "river.linear_model",
+        "river.forest"
     ]
     Cls = _find_in_modules(classifier_type, river_modules)
     if Cls is not None:
