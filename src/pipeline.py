@@ -406,14 +406,14 @@ class CommandExecutor:
 # PipelineRunner entry point
 # -------------------------
 class PipelineRunner:
-    def __init__(self, config_path_or_dir):
+    def __init__(self, config_path_or_dir, optuna_mode=False, optuna_trial=None, optuna_dir=None):
+        self.optuna_mode = optuna_mode
+        self.optuna_trial = optuna_trial
+        self.optuna_dir = optuna_dir
         self.cfg_reader = ConfigReader(config_path_or_dir)
-        # experiment manager handles paths, RNG, scripts, classes
         self.exp = ExperimentManager(self.cfg_reader)
         self.exp.prepare_dirs()
         self.exp.validate_plotting_scripts()
-
-        # single build manager to construct all components
         bm = BuildManager(self.cfg_reader, self.exp)
         self.loaders, self.feature_extractor, self.preprocessor, self.classifier_wrapper = bm.build_all()
 
@@ -428,6 +428,64 @@ class PipelineRunner:
         )
         executor.run_all()
         return True
+
+    def run_optuna_trial(self):
+        # Only run the first train command, skip test commands
+        commands = self.cfg_reader.get_commands()
+        train_cmds = [c for c in commands if c.get("command") == "train"]
+        if not train_cmds:
+            raise RuntimeError("No train command found for Optuna trial.")
+        cmd = train_cmds[0]
+        # Prepare paths for logging
+        self.exp.prepare_dirs()
+        self.exp.validate_plotting_scripts()
+        bm = BuildManager(self.cfg_reader, self.exp)
+        self.loaders, self.feature_extractor, self.preprocessor, self.classifier_wrapper = bm.build_all()
+        executor = CommandExecutor(
+            self.cfg_reader,
+            self.exp,
+            self.loaders,
+            self.feature_extractor,
+            self.preprocessor,
+            self.classifier_wrapper,
+        )
+        # Run only the selected train command
+        idx = 0
+        executor._ensure_command_paths(cmd, idx)
+        executor._run_train(idx, cmd)
+        # After training, parse the log for metrics
+        log_file = self.exp.logs_dir / f"{idx}_{cmd['name']}_train.log"
+        f1, malware_fpr = self._extract_metrics_from_log(log_file)
+        return {"f1": f1, "malware_fpr": malware_fpr}
+
+    def _extract_metrics_from_log(self, log_file):
+        # Parse the log file for final F1 and malware FPR
+        # This is a placeholder: you may want to parse the last line or compute from metrics
+        f1 = 0.0
+        malware_fpr = 1.0
+        try:
+            with open(log_file, "r") as f:
+                lines = f.readlines()
+            for line in reversed(lines):
+                if "Validation metrics" in line:
+                    # Example: ... Validation metrics: {'TP': 10, 'FP': 2, ...}
+                    import re
+                    import ast
+                    m = re.search(r"Validation metrics: (\{.*?\})", line)
+                    if m:
+                        metrics = ast.literal_eval(m.group(1))
+                        tp = metrics.get("TP", 0)
+                        fp = metrics.get("FP", 0)
+                        fn = metrics.get("FN", 0)
+                        tn = metrics.get("TN", 0)
+                        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+                        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+                        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+                        malware_fpr = fp / (fp + tn) if (fp + tn) > 0 else 1.0
+                        break
+        except Exception:
+            pass
+        return f1, malware_fpr
 
 # -------------------------
 # CLI

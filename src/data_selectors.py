@@ -10,14 +10,14 @@ Notes:
  - Uses loader API: reset_epoch(batch_size), next_n(n) if available, next_batch()
  - Attempts to provide full-sized batches until data are exhausted.
 """
-
+from collections import deque
 import numpy as np
+import itertools
 try:
     import pandas as pd
 except Exception:
     pd = None
 
-from collections import deque
 
 # -------------------------
 # helpers
@@ -317,47 +317,34 @@ class RandomBatchesMixer(DefaultMixer):
     def next_batch(self):
         if self.batch_size is None:
             raise RuntimeError("reset_epoch must be called first")
-        B = int(self.batch_size)
-        # initial draw: sample counts per dataset from multinomial
-        counts = self.rng.multinomial(B, self.probs).tolist()
-        # attempt to pull requested counts, redistribute shortfalls
-        parts = []
-        produced = {}
-
-        # first pass: ask each loader
-        shortfall = 0
-        for i, key in enumerate(self.datasets):
-            want = int(counts[i])
-            if want <= 0:
-                produced[key] = 0
+        batch_size = int(self.batch_size)
+        dataset_sample_counts = self.rng.multinomial(batch_size, self.probs).tolist()
+        sample_counts_by_dataset = {}
+        batch_records = []
+        for dataset_index, dataset_key in enumerate(self.datasets):
+            num_samples_needed = int(dataset_sample_counts[dataset_index])
+            if num_samples_needed <= 0:
+                sample_counts_by_dataset[dataset_key] = 0
                 continue
-            part = self._pull_n_from_loader(key, want)
-            got = batch_len(part)
-            if got:
-                parts.append(part)
-                produced[key] = got
+            dataset_batch = self._pull_n_from_loader(dataset_key, num_samples_needed)
+            if dataset_batch is None:
+                sample_counts_by_dataset[dataset_key] = 0
+                continue
+            if is_dataframe(dataset_batch):
+                dataset_records = [dataset_batch.iloc[j] for j in range(batch_len(dataset_batch))]
             else:
-                produced[key] = 0
-            if got < want:
-                shortfall += want - got
-        # if shortfall > 0, attempt to fill from other loaders in a second pass
-        if shortfall > 0:
-            # try to draw extra from datasets that still have data
-            for i, key in enumerate(self.datasets):
-                if shortfall <= 0:
-                    break
-                # request up to shortfall
-                extra = self._pull_n_from_loader(key, shortfall)
-                got = batch_len(extra)
-                if got:
-                    parts.append(extra)
-                    produced[key] = produced.get(key, 0) + got
-                    shortfall -= got
-        if not parts:
+                dataset_records = list(dataset_batch)
+            num_records_taken = min(num_samples_needed, len(dataset_records))
+            batch_records.extend(dataset_records[:num_records_taken])
+            sample_counts_by_dataset[dataset_key] = num_records_taken
+        if not batch_records:
             return None, None
-        batch = concat_batches(parts)
-        # record plan and split
-        self.mix_plan.append({"type": "random_batches", "counts": produced})
+        # Convert to DataFrame if possible, else list
+        if pd is not None and batch_records and hasattr(batch_records[0], '__class__') and 'pandas' in str(type(batch_records[0])):
+            batch = pd.DataFrame(batch_records)
+        else:
+            batch = batch_records
+        self.mix_plan.append({"type": "random_batches", "counts": sample_counts_by_dataset})
         train, val = self._split_batch(batch)
         last = self.mix_plan[-1]
         last["train_count"] = batch_len(train) if train is not None else 0
@@ -388,7 +375,7 @@ class BalancedByLabelMixer(DefaultMixer):
         self.provided_labels = spec.get("labels")  # optional explicit labels list
         self.micro = int(spec.get("micro_batch", 16))
         self.balance_spec = spec.get("balance") or spec.get("balance_list") or spec.get("balance_dict")
-        # per-label buffers to hold leftovers (list of batches)
+        # per-label buffers to hold leftovers (deque of batches)
         self.buffers = {}
         # internal label order (set on reset_epoch)
         self.labels = []
@@ -446,9 +433,9 @@ class BalancedByLabelMixer(DefaultMixer):
             else:
                 self.labels = sorted(list(labels_set))
                 print("labels discovered by balanced mixer: ", self.labels)
-        # init buffers map
+        # init buffers map with deque for efficient pops/appends
         for lbl in self.labels:
-            self.buffers.setdefault(lbl, [])
+            self.buffers[lbl] = deque()
 
         # parse balance_spec into fractions per label
         self.balance_map = self._parse_balance_spec(self.balance_spec, self.labels)
@@ -506,41 +493,32 @@ class BalancedByLabelMixer(DefaultMixer):
     def _consume_from_buffer(self, label, need):
         """
         Consume up to `need` items from the buffer for `label`.
-        Returns a list of collected batches (may be single batch) or None.
-        Leaves any remainder from partially-consumed buffered items back in buffer.
+        Returns a generator of records, updates buffer in-place.
         """
         if need <= 0:
-            return None
-        buf = self.buffers.setdefault(label, [])
-        if not buf:
-            return None
-        collected = []
-        remaining = need
-        new_buf = []
-        for b in buf:
-            if remaining <= 0:
-                new_buf.append(b)
-                continue
-            blen = batch_len(b)
-            if blen <= 0:
-                continue
-            if blen <= remaining:
-                collected.append(b)
-                remaining -= blen
+            return
+        buf = self.buffers[label]
+        count = 0
+        while buf and count < need:
+            batch = buf[0]
+            blen = batch_len(batch)
+            take = min(need - count, blen)
+            # Use generator to yield records
+            if is_dataframe(batch):
+                for i in range(take):
+                    yield batch.iloc[i]
             else:
-                # take portion, keep remainder
-                part = slice_batch(b, 0, remaining)
-                rem = slice_batch(b, remaining, blen)
-                if part is not None:
-                    collected.append(part)
-                if rem is not None and batch_len(rem) > 0:
-                    new_buf.append(rem)
-                remaining = 0
-        # replace buffer with new_buf
-        self.buffers[label] = new_buf
-        if not collected:
-            return None
-        return concat_batches(collected)
+                for i in range(take):
+                    yield batch[i]
+            count += take
+            if take < blen:
+                # Remove used part, keep remainder
+                if is_dataframe(batch):
+                    buf[0] = batch.iloc[take:].reset_index(drop=True)
+                else:
+                    buf[0] = batch[take:]
+            else:
+                buf.popleft()
 
     def _store_remainder_to_buffer(self, label, batch, consumed):
         """
@@ -623,81 +601,81 @@ class BalancedByLabelMixer(DefaultMixer):
         if not self.labels:
             # defensive fallback
             self.labels = ["Benign", "Malicious"]
-            for lbl in self.labels:
-                self.buffers.setdefault(lbl, [])
+            for label in self.labels:
+                self.buffers[label] = deque()
             self.balance_map = self._parse_balance_spec(self.balance_spec, self.labels)
 
-        B = int(self.batch_size)
-        if B <= 0:
+        batch_size = int(self.batch_size)
+        if batch_size <= 0:
             return None, None
 
         # compute desired counts per label (integers) with remainder handling
-        fracs = [self.balance_map.get(lbl, 0.0) for lbl in self.labels]
-        raw_counts = [float(f) * B for f in fracs]
-        int_counts = [int(np.floor(c)) for c in raw_counts]
-        rem = B - sum(int_counts)
+        label_fractions = [self.balance_map.get(label, 0.0) for label in self.labels]
+        raw_label_counts = [float(fraction) * batch_size for fraction in label_fractions]
+        int_label_counts = [int(np.floor(count)) for count in raw_label_counts]
+        remainder = batch_size - sum(int_label_counts)
         # distribute remainder to labels with largest fractional parts
-        frac_parts = [(i, raw_counts[i] - int_counts[i]) for i in range(len(self.labels))]
-        frac_parts.sort(key=lambda x: x[1], reverse=True)
-        for i in range(rem):
-            idx = frac_parts[i % len(frac_parts)][0]
-            int_counts[idx] += 1
+        fractional_parts = [(i, raw_label_counts[i] - int_label_counts[i]) for i in range(len(self.labels))]
+        fractional_parts.sort(key=lambda x: x[1], reverse=True)
+        for i in range(remainder):
+            idx = fractional_parts[i % len(fractional_parts)][0]
+            int_label_counts[idx] += 1
 
-        parts = []
-        produced = {}
-        # For each label: first take from buffer, then pull from loaders until satisfied
-        for i, lbl in enumerate(self.labels):
-            need = int_counts[i]
-            if need <= 0:
-                produced[lbl] = 0
+        batch_records = []
+        label_counts_in_batch = {}
+        # For each label: use generator to yield up to need records from buffer, then from loaders
+        for label_index, label in enumerate(self.labels):
+            num_needed = int_label_counts[label_index]
+            if num_needed <= 0:
+                label_counts_in_batch[label] = 0
                 continue
-            collected_parts = []
-            # consume buffer
-            buf_part = self._consume_from_buffer(lbl, need)
-            got = batch_len(buf_part)
-            if got:
-                collected_parts.append(buf_part)
-                need -= got
-            # round-robin pull across datasets until need satisfied or exhausted
-            ds_idx = 0
+            # Generator for buffer
+            buffer_generator = self._consume_from_buffer(label, num_needed)
+            buffer_records = list(itertools.islice(buffer_generator, num_needed))
+            num_from_buffer = len(buffer_records)
+            num_remaining = num_needed - num_from_buffer
+            # If still need more, pull from loaders round-robin
+            loader_records = []
+            dataset_index = 0
             attempts = 0
-            per_ds_want = int(np.ceil(float(max(1, need)) / max(1, len(self.datasets))))
-            while need > 0 and attempts < len(self.datasets) * 8:
-                key = self.datasets[ds_idx % len(self.datasets)]
-                want = min(per_ds_want, need)
-                chunk = self._pull_for_label_from_loader(key, lbl, want)
+            per_dataset_want = int(np.ceil(float(max(1, num_remaining)) / max(1, len(self.datasets))))
+            while num_remaining > 0 and attempts < len(self.datasets) * 8:
+                dataset_key = self.datasets[dataset_index % len(self.datasets)]
+                want = min(per_dataset_want, num_remaining)
+                chunk = self._pull_for_label_from_loader(dataset_key, label, want)
                 if chunk is None:
-                    ds_idx += 1
+                    dataset_index += 1
                     attempts += 1
                     continue
-                # If chunk larger than needed, take consumed portion and buffer remainder
-                clen = batch_len(chunk)
-                if clen <= need:
-                    collected_parts.append(chunk)
-                    need -= clen
+                chunk_length = batch_len(chunk)
+                if is_dataframe(chunk):
+                    chunk_records = [chunk.iloc[j] for j in range(chunk_length)]
                 else:
-                    # take first `need` items, buffer remainder
-                    taken = slice_batch(chunk, 0, need)
-                    rem = slice_batch(chunk, need, clen)
-                    if taken is not None and batch_len(taken) > 0:
-                        collected_parts.append(taken)
-                    if rem is not None and batch_len(rem) > 0:
-                        self.buffers.setdefault(lbl, []).append(rem)
-                    need = 0
-                ds_idx += 1
-            # finalize for this label
-            if collected_parts:
-                part = concat_batches(collected_parts)
-                parts.append(part)
-                produced[lbl] = batch_len(part)
-            else:
-                produced[lbl] = 0
+                    chunk_records = list(chunk)
+                take = min(num_remaining, chunk_length)
+                loader_records.extend(chunk_records[:take])
+                # Buffer any remainder
+                if take < chunk_length:
+                    if is_dataframe(chunk):
+                        self.buffers[label].append(chunk.iloc[take:].reset_index(drop=True))
+                    else:
+                        self.buffers[label].append(chunk[take:])
+                num_remaining -= take
+                dataset_index += 1
+                attempts += 1
+            all_label_records = buffer_records + loader_records
+            label_counts_in_batch[label] = len(all_label_records)
+            batch_records.extend(all_label_records)
 
-        if not parts:
+        if not batch_records:
             return None, None
 
-        batch = concat_batches(parts)
-        self.mix_plan.append({"type": "balanced_by_label", "counts_by_label": produced})
+        # Convert to DataFrame if possible, else list
+        if pd is not None and batch_records and hasattr(batch_records[0], '__class__') and 'pandas' in str(type(batch_records[0])):
+            batch = pd.DataFrame(batch_records)
+        else:
+            batch = batch_records
+        self.mix_plan.append({"type": "balanced_by_label", "counts_by_label": label_counts_in_batch})
         train, val = self._split_batch(batch)
         last = self.mix_plan[-1]
         last["train_count"] = batch_len(train) if train is not None else 0
@@ -808,12 +786,8 @@ class BalancedByLabelWithOversamplingMixer(DefaultMixer):
             self.labels = self._discover_labels()
 
         # Initialize buffers and stashes
-        self.buffers = {
-            lbl: deque(maxlen=self.buffer_size) for lbl in self.labels
-        }
-        self.stashes = {
-            lbl: deque(maxlen=self.stash_size) for lbl in self.labels
-        }
+        self.buffers = {lbl: deque(maxlen=self.buffer_size) for lbl in self.labels}
+        self.stashes = {lbl: deque(maxlen=self.stash_size) for lbl in self.labels}
 
         # Parse balance spec
         self.balance_map = self._parse_balance_spec(self.balance_spec, self.labels)
