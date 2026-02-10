@@ -1,95 +1,5 @@
 ---
-# Optuna Integration: Hyperparameter Search Architecture
 
-## Optuna Architecture Overview
-
-The pipeline now supports automated hyperparameter optimization using Optuna. This enables multi-objective search for the best classifier and mixer parameters, maximizing F1 and minimizing malware FPR.
-
-### Key Features
-- **Optuna mode**: Run with `--optuna` to enable hyperparameter search.
-- **Multi-objective**: Simultaneously maximize F1 and minimize malware FPR.
-- **Config-driven**: All search spaces and experiment settings are defined in the config file (see `optuna_conf.yaml`).
-- **Logging**: All trial configs and results are stored in `optuna/` under each experiment folder.
-- **Normal mode**: Running without `--optuna` executes the pipeline as before, with no changes to normal operation.
-
-### Folder Structure
-- `experiments/<experiment_name>/optuna/`
-  - `optuna_trials.csv`: All trial parameters and results
-  - `optuna_summary.json`: Best results and study info
-  - `trial_{n}_config.yaml`: Config used for each trial
-  - `trial_{n}_result.json`: Partial/epoch results, final metrics
-
-### How to Run
-
-**Normal mode:**
-```bash
-python run.py default_config.yaml
-```
-
-**Optuna mode:**
-```bash
-python run.py optuna_conf.yaml --optuna
-```
-This will run a multi-objective Optuna study, searching for the best combination of classifier, mixer, and other parameters as defined in the config.
-
-### Example Optuna Config
-See `optuna_conf.yaml` for a full example. Key section:
-```yaml
-optuna:
-  enabled: true
-  n_trials: 20
-  metric: f1
-  directions: ["maximize", "minimize"]
-  hyperparameters:
-    ARFClassifier:
-      lambda_value:
-        type: int
-        low: 1
-        high: 20
-      n_models:
-        type: int
-        low: 5
-        high: 50
-    SGDClassifier:
-      alpha:
-        type: float
-        low: 0.0001
-        high: 0.1
-        log: true
-      loss:
-        type: categorical
-        choices: ["hinge", "log_loss"]
-    Mixer:
-      type:
-        type: categorical
-        choices: ["oversampling", "balanced", "random", "sequence"]
-      round_robin_cycles:
-        type: int
-        low: 8
-        high: 20
-      stash_size_per_label:
-        type: int
-        low: 500
-        high: 2000
-      buffer_size_per_label:
-        type: int
-        low: 1000
-        high: 3000
-      micro_batch:
-        type: int
-        low: 16
-        high: 64
-      datasets:
-        type: categorical
-        choices: ["010", "015", "011", "010", "001", "008"]
-```
-
-### Notes
-- Each Optuna trial runs a full pipeline training+validation, so expect long runtimes.
-- All results are reproducible and logged for later inspection.
-- Test/validation data is unified for all trials; only training datasets may change.
-
-# How to run
 
 Run the pipeline from the repository root (provide a config file or directory):
 
@@ -99,7 +9,26 @@ python run.py /path/to/config_or_config_dir
 
 If you omit the argument the pipeline will look for a config in the current directory (`.`).
 
+
 Results are written under `experiments/<experiment_name>`, but if a folder with the same name already exists, a numeric suffix is appended (e.g., `<experiment_name>_1`, `<experiment_name>_2`, etc.) to ensure previous results are not overwritten. The experiment folder name is generated centrally from the config and passed to all pipeline modules. Inner file names and subdirectory structures remain unchanged.
+
+---
+
+## Configuration Structure (Updated)
+
+The pipeline is **fully config-driven**. All experiment settings, including dataset roots, preprocessing, model/wrapper, and Optuna search spaces, are defined in YAML config files. The config is parsed by `ConfigReader` and passed to all modules.
+
+**Key config files:**
+- `default_config.yaml`: Standard pipeline config for normal runs.
+- `optuna_conf.yaml`: Example config for Optuna search (see Optuna section above).
+
+**Config highlights:**
+- `model.classifier_type` can be set as a categorical Optuna hyperparameter for dynamic classifier selection.
+- `model.wrapper` is fixed per run (see parameter dependencies below).
+- `optuna.n_jobs` controls parallel Optuna trials (default: 1).
+- All config values for a given trial are logged in `optuna/trial_{n}_config.yaml`.
+
+---
 
 ---
 
@@ -153,14 +82,16 @@ Key modules:
 
 ---
 
+
 ## Usage (brief)
 
-1. Prepare the `default_config.yaml` or modify it as you wish.
+1. Prepare the `default_config.yaml` or `optuna_conf.yaml` as needed.
 2. Ensure `root` points to your dataset root with subfolders (e.g. `root/001/data/conn.log.labeled`).
-3. Run `python run.py /path/to/config`. If you don't provide config, a `default_config.yaml` is used
-4. Inspect experiment outputs in `experiments/<experiment_name>`.
+3. Run `python run.py /path/to/config [--optuna]`. If you don't provide a config, `default_config.yaml` is used.
+4. Inspect experiment outputs in `experiments/<experiment_name>`. For Optuna runs, see the `optuna/` subfolder for all trial logs and configs.
 
 ---
+
 
 ## Output
 
@@ -228,7 +159,7 @@ pytest
 ```
 
 ---
-# Developement
+# Development
 - If you want to add features, create an issue, or fork the repository and create a pull request with your new code.
 - For the PR to be merged, we need all tests to be passing and pre-commit working without errors.
 - Pre-commit runs linters and some checks based on the config. Here we use it to keep some code quality. If you want to contribute,
@@ -239,13 +170,15 @@ pre-commit run --all-files
 
 ## Extending the Pipeline
 
+
 ### Add a new model or wrapper
 
 * Implement a wrapper or classifier class in `src/classifier_wrapper.py`.
 
   * To reuse the pipeline’s training flow, extend `ClassifierWrapper` or implement the same `partial_fit`, `predict`, `save_classifier`, and `load_classifier` contract.
   * The factory `src.class_factory.get_wrapper_class` resolves wrapper names; add your wrapper class there (or reference it by dotted path in the config).
-* In the `model` config, point to the classifier type (short name or dotted path) and optionally the wrapper name.
+* In the `model` config, point to the classifier type (short name or dotted path) and the wrapper name. **Note:** In Optuna mode, only the classifier type is varied dynamically; the wrapper is fixed per run (see notes below).
+
 
 ### Add a new preprocessing step
 
@@ -258,11 +191,13 @@ preprocessor.add_step("scaler", StandardScaler())
 
 * Saved preprocessing artifacts live under `output/preprocessing` and are re-loadable.
 
+
 ### Add a custom dataset loader
 
 * `src.dataset_wrapper.find_and_load_datasets` returns a mapping of dataset_key -> loader.
 * Your loader must support at least: `reset_epoch(batch_size)`, `next_batch()` and optionally `next_n(n)` to work with built-in mixers.
 * Register/load your loader by replacing or extending `find_and_load_datasets` to return your loader instances keyed by dataset folder name.
+
 
 ### Add or modify mixers
 
@@ -270,6 +205,7 @@ preprocessor.add_step("scaler", StandardScaler())
 * Update `src.class_factory.get_mixer_class` or reference a mixer by dotted path from the config to use a custom mixer.
 
 ---
+
 ## Loading saved models & preprocessing
 
 The pipeline can reuse preprocessing steps and trained models from disk via configuration. This is useful for testing, fine-tuning, or continuing training from a previous run.
@@ -278,6 +214,7 @@ The pipeline can reuse preprocessing steps and trained models from disk via conf
 * Use preprocessing.load_from to point to a directory containing saved preprocessing artifacts (*.bin).
 * Absolute paths are used as-is.
 * Relative paths are resolved relative to the experiment root (experiments/<experiment_name>).
+
 
 ```yaml
 preprocessing:
@@ -289,6 +226,7 @@ At startup, the pipeline calls PreprocessingWrapper.load(...) and expects one fi
 * Use model.load_from to load a previously trained classifier from disk.
 * The directory must contain a serialized classifier binary.
 * The default filename is classifier.bin and can be overridden via model.load_name.
+
 
 ```yaml
 model:
@@ -303,10 +241,129 @@ During initialization, the pipeline:
 
 ----
 
+
 ## SLIPS
 
 SLIPS (Stratosphere Linux IPS) is a behavioral machine-learning based intrusion detection and prevention system developed by the Stratosphere Laboratory. It detects malicious behaviors in network traffic and supports inputs such as PCAP files and flow logs from tools like Suricata and Zeek. For full details and installation instructions see the official project: https://github.com/stratosphereips/StratosphereLinuxIPS
 
-## Author
+
+## Parameter Dependencies & Notes
+
+**Classifier/Wrapper Linkage:**
+- The pipeline supports dynamic selection of `classifier_type` (e.g., `SGDClassifier`, `ARFClassifier`) as an Optuna hyperparameter.
+- The `wrapper` (e.g., `SklearnWrapper`, `RiverWrapper`) is **fixed per run** and must be compatible with all classifiers being searched. This is by design: only one library's models are optimized per run for simplicity and reliability.
+- If you wish to optimize across wrappers, run separate Optuna studies for each wrapper type.
+
+**Config-driven Search Spaces:**
+- All Optuna search spaces are defined in the config under `optuna.hyperparameters`.
+- You can add new classifiers or parameters by extending this section.
+
+**Parallelization:**
+- The `optuna.n_jobs` parameter controls the number of parallel Optuna trials. Set this in your config to speed up search on multi-core systems.
+
+**Trial Logging:**
+- Every Optuna trial logs its full config and results in the `optuna/` subfolder of the experiment directory. This ensures full reproducibility and easy inspection.
+
+**Experiment Directory Structure:**
+- All experiment outputs (including Optuna logs) are written under a unique experiment directory, with numeric suffixes to avoid overwriting.
+
+**Normal vs Optuna Mode:**
+- Running without `--optuna` uses the config as-is for a single experiment. With `--optuna`, the pipeline performs a hyperparameter search as described above.
+
+---
+
+
+## Optuna Integration: Hyperparameter Search Architecture
+
+### Optuna Architecture Overview
+
+The pipeline now supports automated hyperparameter optimization using Optuna. This enables multi-objective search for the best classifier and mixer parameters, maximizing F1 and minimizing malware FPR.
+
+#### Key Features
+- **Optuna mode**: Run with `--optuna` to enable hyperparameter search.
+- **Multi-objective**: Simultaneously maximize F1 and minimize malware FPR.
+- **Config-driven**: All search spaces and experiment settings are defined in the config file (see `optuna_conf.yaml`).
+- **Logging**: All trial configs and results are stored in `optuna/` under each experiment folder.
+- **Normal mode**: Running without `--optuna` executes the pipeline as before, with no changes to normal operation.
+
+#### Folder Structure
+- `experiments/<experiment_name>/optuna/`
+  - `optuna_trials.csv`: All trial parameters and results
+  - `optuna_summary.json`: Best results and study info
+  - `trial_{n}_config.yaml`: Config used for each trial
+  - `trial_{n}_result.json`: Partial/epoch results, final metrics
+
+#### How to Run
+
+**Normal mode:**
+```bash
+python run.py default_config.yaml
+```
+
+**Optuna mode:**
+```bash
+python run.py optuna_conf.yaml --optuna
+```
+This will run a multi-objective Optuna study, searching for the best combination of classifier, mixer, and other parameters as defined in the config.
+
+#### Example Optuna Config
+See `optuna_conf.yaml` for a full example. Key section:
+```yaml
+optuna:
+  enabled: true
+  n_trials: 20
+  metric: f1
+  directions: ["maximize", "minimize"]
+  hyperparameters:
+    ARFClassifier:
+      lambda_value:
+        type: int
+        low: 1
+        high: 20
+      n_models:
+        type: int
+        low: 5
+        high: 50
+    SGDClassifier:
+      alpha:
+        type: float
+        low: 0.0001
+        high: 0.1
+        log: true
+      loss:
+        type: categorical
+        choices: ["hinge", "log_loss"]
+    Mixer:
+      type:
+        type: categorical
+        choices: ["oversampling", "balanced", "random", "sequence"]
+      round_robin_cycles:
+        type: int
+        low: 8
+        high: 20
+      stash_size_per_label:
+        type: int
+        low: 500
+        high: 2000
+      buffer_size_per_label:
+        type: int
+        low: 1000
+        high: 3000
+      micro_batch:
+        type: int
+        low: 16
+        high: 64
+      datasets:
+        type: categorical
+        choices: ["010", "015", "011", "010", "001", "008"]
+```
+
+#### Notes
+- Each Optuna trial runs a full pipeline training+validation, so expect long runtimes.
+- All results are reproducible and logged for later inspection.
+- Test/validation data is unified for all trials; only training datasets may change.
+
+---
+
 **Jan Svoboda** **Stratosphere Lab**
 GitHub: [@jsvobo](https://github.com/jsvobo)
