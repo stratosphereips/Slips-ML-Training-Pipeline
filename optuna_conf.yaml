@@ -71,6 +71,9 @@ optuna:
   metric: [f1, malware_fpr]
   directions: ["maximize", "minimize"]
   hyperparameters:
+    classifier_type:
+      type: categorical
+      choices: [ARFClassifier, SGDClassifier, ADWINBoostingClassifier]
     ARFClassifier:
       lambda_value:
         type: int
@@ -80,6 +83,32 @@ optuna:
         type: int
         low: 5
         high: 50
+
+    ADWINBoostingClassifier:
+      n_models:
+        type: int
+        low: 2
+        high: 20
+      model__type:
+        type: categorical
+        choices: [HoeffdingAdaptiveTreeClassifier]
+      model__params__max_depth:
+        type: int
+        low: 5
+        high: 30
+      model__params__grace_period:
+        type: int
+        low: 50
+        high: 500
+      model__params__max_size:
+        type: int
+        low: 5
+        high: 50
+      model__params__delta:
+        type: float
+        low: 1.0e-8
+        high: 1.0e-6
+        log: true
     SGDClassifier:
       alpha:
         type: float
@@ -89,15 +118,6 @@ optuna:
       loss:
         type: categorical
         choices: ["hinge", "log_loss"]
-    RandomForestClassifier:
-      n_estimators:
-        type: int
-        low: 5
-        high: 25
-      max_depth:
-        type: int
-        low: 2
-        high: 20
     Mixer:
       type:
         type: categorical

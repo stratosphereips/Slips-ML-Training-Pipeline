@@ -21,8 +21,11 @@ class OptunaOptimizer:
 
     def suggest_params(self, trial, classifier_type):
         params = {}
+        # Only suggest params for the selected classifier_type
         if classifier_type in self.search_space:
             for pname, pdef in self.search_space[classifier_type].items():
+                if pname == "classifier_type":
+                    continue
                 if pdef["type"] == "int":
                     params[pname] = trial.suggest_int(pname, pdef["low"], pdef["high"])
                 elif pdef["type"] == "float":
@@ -33,14 +36,20 @@ class OptunaOptimizer:
 
     def objective(self, trial):
         config = deepcopy(self.base_config)
-        classifier_type = config["model"]["classifier_type"]
+        # Dynamically suggest classifier_type
+        classifier_type_choices = self.search_space.get("classifier_type", {}).get("choices")
+        if classifier_type_choices:
+            classifier_type = trial.suggest_categorical("classifier_type", classifier_type_choices)
+        else:
+            classifier_type = config["model"]["classifier_type"]
+        config["model"]["classifier_type"] = classifier_type
         params = self.suggest_params(trial, classifier_type)
-        config["model"]["classifier_params"].update(params)
+        config["model"]["classifier_params"] = params
         # Save only changed params for this trial
         trial_cfg_path = self.optuna_dir / f"trial{trial.number}_{self.exp_dir.name}_config.yaml"
         with open(trial_cfg_path, "w") as f:
             import yaml
-            yaml.safe_dump(trial.params, f)
+            yaml.safe_dump({"classifier_type": classifier_type, **params}, f)
         # Run pipeline (train+val), collect metrics
         pipeline = self.pipeline_cls(config, optuna_trial=trial, optuna_dir=self.optuna_dir)
         metrics = pipeline.run_optuna_trial()  # Should return dict with metric_names
@@ -49,7 +58,7 @@ class OptunaOptimizer:
         with open(trial_result_path, "w") as f:
             json.dump(metrics, f, indent=2)
         # Log for summary
-        self.trials_log.append({"trial": trial.number, "params": params, "metrics": metrics})
+        self.trials_log.append({"trial": trial.number, "classifier_type": classifier_type, "params": params, "metrics": metrics})
         return tuple(metrics[m] for m in self.metric_names)
 
     def optimize(self):
