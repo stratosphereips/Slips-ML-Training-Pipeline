@@ -1,6 +1,37 @@
+import json
 from .commons import BENIGN, MALICIOUS, BACKGROUND
 import numpy as np
 from pathlib import Path
+
+# -------------------------
+# Optuna Logger for trial/config/result logging
+# -------------------------
+class OptunaLogger:
+    def __init__(self, optuna_dir):
+        self.optuna_dir = Path(optuna_dir)
+        self.optuna_dir.mkdir(parents=True, exist_ok=True)
+
+    def log_trial_config(self, trial_number, config):
+        cfg_path = self.optuna_dir / f"trial_{trial_number}_config.yaml"
+        try:
+            import yaml
+            with open(cfg_path, "w") as f:
+                yaml.safe_dump(config, f)
+        except Exception:
+            with open(cfg_path, "w") as f:
+                f.write(str(config))
+
+    def log_trial_result(self, trial_number, result):
+        result_path = self.optuna_dir / f"trial_{trial_number}_result.json"
+        with open(result_path, "w") as f:
+            json.dump(result, f, indent=2)
+
+    def log_summary(self, summary):
+        summary_path = self.optuna_dir / "optuna_summary.json"
+        with open(summary_path, "w") as f:
+            json.dump(summary, f, indent=2)
+
+
 
 
 class Logger:

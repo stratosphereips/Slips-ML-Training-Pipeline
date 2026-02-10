@@ -1,4 +1,3 @@
-
 """
 Minimal ConfigReader
 Usage:
@@ -43,7 +42,7 @@ def _load_file(path: Path) -> dict:
 
 class ConfigReader:
     """
-    Minimal, strict config reader. Expects a single config file (yaml/json).
+    Minimal, strict config reader. Expects a single config file (yaml/json) or a config dict.
     No implicit defaults are injected except a few derived/resolved path fields.
     """
 
@@ -59,11 +58,15 @@ class ConfigReader:
         "plotting_pths",
     ]
 
-    def __init__(self, path_or_dir: str):
-        self.base = Path(path_or_dir)
+    def __init__(self, path_or_dict):
         self.config_path: Optional[Path] = None
         self._raw_config: Optional[dict] = None
         self._resolved: Optional[dict] = None
+        if isinstance(path_or_dict, dict):
+            self._raw_config = path_or_dict
+            self.base = None
+        else:
+            self.base = Path(path_or_dict)
 
     # ---------------- discovery ----------------
     def _find_config_file(self) -> Optional[Path]:
@@ -110,22 +113,24 @@ class ConfigReader:
     def load(self) -> dict:
         if self._resolved is not None:
             return self._resolved
-
-        cfg_file = self._find_config_file()
-        if cfg_file is None:
-            raise FileNotFoundError(f"No config file found at or under: {self.base}")
-        self.config_path = cfg_file
-        self._raw_config = _load_file(cfg_file)
+        if self._raw_config is not None:
+            cfg = self._raw_config
+        else:
+            cfg_file = self._find_config_file()
+            if cfg_file is None:
+                raise FileNotFoundError(f"No config file found at or under: {self.base}")
+            self.config_path = cfg_file
+            cfg = _load_file(cfg_file)
 
         # Validate required top-level keys (single source of truth)
-        self._assert_keys_present(self._raw_config, self.REQUIRED_TOP_LEVEL)
+        self._assert_keys_present(cfg, self.REQUIRED_TOP_LEVEL)
 
         # Basic structural validations
-        self._validate_plotting_paths(self._raw_config)
-        self._validate_commands(self._raw_config)
+        self._validate_plotting_paths(cfg)
+        self._validate_commands(cfg)
 
         # create a copy we'll modify (clear intent)
-        effective_config = dict(self._raw_config)
+        effective_config = dict(cfg)
 
         # ------------------------------
         # propagate top-level batch sizes into dataset_loader mapping
@@ -147,12 +152,17 @@ class ConfigReader:
         paths.setdefault("experiment_dir", "./experiments")
         exp_name = effective_config["experiment_name"]
         base_experiments = Path(paths["experiment_dir"])
-        # Find unique experiment directory name
-        exp_dir = base_experiments / exp_name
-        suffix = 0
-        while exp_dir.exists():
-            suffix += 1
-            exp_dir = base_experiments / f"{exp_name}_{suffix}"
+        optuna_enabled = bool(effective_config.get("optuna", {}).get("enabled", False))
+        if optuna_enabled:
+            # For Optuna runs, always use the base experiment directory (no suffix)
+            exp_dir = base_experiments / exp_name
+        else:
+            # For normal runs, increment suffix to avoid overwriting
+            exp_dir = base_experiments / exp_name
+            suffix = 0
+            while exp_dir.exists():
+                suffix += 1
+                exp_dir = base_experiments / f"{exp_name}_{suffix}"
         paths["experiment_dir_resolved"] = str(exp_dir.resolve())
         effective_config["paths"] = paths
 
@@ -197,6 +207,19 @@ class ConfigReader:
         # final store
         self._resolved = effective_config
         return self._resolved
+
+    def get_optuna_config(self):
+        cfg = self.load()
+        optuna_cfg = cfg.get("optuna", {})
+        # Provide defaults if not present
+        return {
+            "enabled": optuna_cfg.get("enabled", False),
+            "n_trials": optuna_cfg.get("n_trials", 20),
+            "n_jobs": optuna_cfg.get("n_jobs", 1),
+            "metric": optuna_cfg.get("metric", "f1"),
+            "directions": optuna_cfg.get("directions", ["maximize", "minimize"]),
+            "hyperparameters": optuna_cfg.get("hyperparameters", {}),
+        }
 
     # ---------------- accessors ----------------
     def get_feature_extractor_params(self) -> dict:
