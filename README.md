@@ -1,3 +1,93 @@
+---
+# Optuna Integration: Hyperparameter Search Architecture
+
+## Optuna Architecture Overview
+
+The pipeline now supports automated hyperparameter optimization using Optuna. This enables multi-objective search for the best classifier and mixer parameters, maximizing F1 and minimizing malware FPR.
+
+### Key Features
+- **Optuna mode**: Run with `--optuna` to enable hyperparameter search.
+- **Multi-objective**: Simultaneously maximize F1 and minimize malware FPR.
+- **Config-driven**: All search spaces and experiment settings are defined in the config file (see `optuna_conf.yaml`).
+- **Logging**: All trial configs and results are stored in `optuna/` under each experiment folder.
+- **Normal mode**: Running without `--optuna` executes the pipeline as before, with no changes to normal operation.
+
+### Folder Structure
+- `experiments/<experiment_name>/optuna/`
+  - `optuna_trials.csv`: All trial parameters and results
+  - `optuna_summary.json`: Best results and study info
+  - `trial_{n}_config.yaml`: Config used for each trial
+  - `trial_{n}_result.json`: Partial/epoch results, final metrics
+
+### How to Run
+
+**Normal mode:**
+```bash
+python run.py default_config.yaml
+```
+
+**Optuna mode:**
+```bash
+python run.py optuna_conf.yaml --optuna
+```
+This will run a multi-objective Optuna study, searching for the best combination of classifier, mixer, and other parameters as defined in the config.
+
+### Example Optuna Config
+See `optuna_conf.yaml` for a full example. Key section:
+```yaml
+optuna:
+  enabled: true
+  n_trials: 20
+  metric: f1
+  directions: ["maximize", "minimize"]
+  hyperparameters:
+    ARFClassifier:
+      lambda_value:
+        type: int
+        low: 1
+        high: 20
+      n_models:
+        type: int
+        low: 5
+        high: 50
+    SGDClassifier:
+      alpha:
+        type: float
+        low: 0.0001
+        high: 0.1
+        log: true
+      loss:
+        type: categorical
+        choices: ["hinge", "log_loss"]
+    Mixer:
+      type:
+        type: categorical
+        choices: ["oversampling", "balanced", "random", "sequence"]
+      round_robin_cycles:
+        type: int
+        low: 8
+        high: 20
+      stash_size_per_label:
+        type: int
+        low: 500
+        high: 2000
+      buffer_size_per_label:
+        type: int
+        low: 1000
+        high: 3000
+      micro_batch:
+        type: int
+        low: 16
+        high: 64
+      datasets:
+        type: categorical
+        choices: ["010", "015", "011", "010", "001", "008"]
+```
+
+### Notes
+- Each Optuna trial runs a full pipeline training+validation, so expect long runtimes.
+- All results are reproducible and logged for later inspection.
+- Test/validation data is unified for all trials; only training datasets may change.
 
 # How to run
 
