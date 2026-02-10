@@ -1,34 +1,30 @@
----
 
-
+## Running the pipeline
 Run the pipeline from the repository root (provide a config file or directory):
 
+- Short version:
 ```bash
 python run.py /path/to/config_or_config_dir
 ```
 
+- Long version:
+1. Prepare the `default_config.yaml` or `optuna_conf.yaml` as needed.
+2. Ensure `root` points to your dataset root with subfolders (e.g. `root/001/data/conn.log.labeled`).
+3. Run `python run.py /path/to/config [--optuna]`. If you don't provide a config, `default_config.yaml` is used.
+4. Inspect experiment outputs in `experiments/<experiment_name>`. For Optuna runs, see the `optuna/` subfolder for all trial logs and configs.
+
 If you omit the argument the pipeline will look for a config in the current directory (`.`).
-
-
 Results are written under `experiments/<experiment_name>`, but if a folder with the same name already exists, a numeric suffix is appended (e.g., `<experiment_name>_1`, `<experiment_name>_2`, etc.) to ensure previous results are not overwritten. The experiment folder name is generated centrally from the config and passed to all pipeline modules. Inner file names and subdirectory structures remain unchanged.
 
 ---
 
-## Configuration Structure (Updated)
+## Configuration
 
 The pipeline is **fully config-driven**. All experiment settings, including dataset roots, preprocessing, model/wrapper, and Optuna search spaces, are defined in YAML config files. The config is parsed by `ConfigReader` and passed to all modules.
 
 **Key config files:**
 - `default_config.yaml`: Standard pipeline config for normal runs.
 - `optuna_conf.yaml`: Example config for Optuna search (see Optuna section above).
-
-**Config highlights:**
-- `model.classifier_type` can be set as a categorical Optuna hyperparameter for dynamic classifier selection.
-- `model.wrapper` is fixed per run (see parameter dependencies below).
-- `optuna.n_jobs` controls parallel Optuna trials (default: 1).
-- All config values for a given trial are logged in `optuna/trial_{n}_config.yaml`.
-
----
 
 ---
 
@@ -81,18 +77,6 @@ Key modules:
 * `src/plot_utils/` — plotting helpers used by the pipeline
 
 ---
-
-
-## Usage (brief)
-
-1. Prepare the `default_config.yaml` or `optuna_conf.yaml` as needed.
-2. Ensure `root` points to your dataset root with subfolders (e.g. `root/001/data/conn.log.labeled`).
-3. Run `python run.py /path/to/config [--optuna]`. If you don't provide a config, `default_config.yaml` is used.
-4. Inspect experiment outputs in `experiments/<experiment_name>`. For Optuna runs, see the `optuna/` subfolder for all trial logs and configs.
-
----
-
-
 ## Output
 
 #### Training example output
@@ -119,12 +103,10 @@ MCC:                  0.9422
 
 === Per-class metrics (Aggregated) - VALIDATION ===
 Class                 TP       TN       FP       FN      Acc     Prec      Rec       F1
-Benign               336      754        6       12   0.9838   0.9825   0.9655   0.9739
 Malicious            754      336       12        6   0.9838   0.9843   0.9921   0.9882
 
 === Per-class metrics (Aggregated) - TRAINING ===
 Class                 TP       TN       FP       FN      Acc     Prec      Rec       F1
-Benign              2842     6866       84      157   0.9758   0.9713   0.9476   0.9593
 Malicious           6866     2842      157       84   0.9758   0.9776   0.9879   0.9828
 ```
 #### Testing example output
@@ -146,12 +128,8 @@ Recall:               0.9135
 === Per-class metrics (final snapshot) ===
 Class                 TP       TN       FP       FN     Prec      Rec       F1
 Malicious          59104     2929      993     5598   0.9835   0.9135   0.9472
-Benign              2929    59104     5598      993   0.3435   0.7468   0.4706
 ```
----
-
 ##  Code Testing
-
 Run unit tests:
 
 ```bash
@@ -169,7 +147,6 @@ pre-commit run --all-files
 ```
 
 ## Extending the Pipeline
-
 
 ### Add a new model or wrapper
 
