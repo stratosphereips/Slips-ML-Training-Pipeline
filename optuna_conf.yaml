@@ -1,0 +1,109 @@
+---
+experiment_name: optuna_example
+root: /opt/Datasets/security-datasets-for-testing/
+seed: 1111
+validation_split: 0.1
+batch_size_train: 1000
+batch_size_test: 2000
+
+classes: ["Benign", "Malicious"]
+plotting_pths:
+  training: "./src/plot_utils/plot_train_perf.py"
+  testing: "./src/plot_utils/plot_test_perf.py"
+paths:
+  experiment_dir: ./experiments
+dataset_loader:
+  data_subdir: data
+  persist_cache_threshold: 20000
+  cache_dir: ./cache
+  labeled_filenames:
+    - conn.log.labeled
+    - labeled-conn.log
+    - conn.log
+  file_encoding: utf-8
+  file_errors: ignore
+  shuffle_per_epoch: false
+features:
+  default_label: Benign
+  protocols_to_discard:
+    - arp
+    - ARP
+    - icmp
+    - igmp
+    - ipv6-icmp
+    - ""
+preprocessing:
+  steps:
+    - name: "scaler"
+      type: "StandardScaler"
+      params: {}
+  save_steps: true
+  step_filename_template: "{name}.bin"
+model:
+  wrapper: RiverClassifierWrapper
+  classifier_type: ARFClassifier
+  classifier_params:
+    lambda_value: 10
+    n_models: 10
+commands:
+  - name: "train"
+    command: "train"
+    mixer:
+      type: "sequence"
+      datasets: ["010", "015", "011", "010"]
+
+  - name: "test_all"
+    command: "test"
+    mixer:
+      type: "sequence"
+      datasets: ["001", "008", "009", "010", "011", "012", "013",
+                 "014", "015", "016", "017", "018", "020", "021",
+                 "025", "026", "030", "031", "035", "036", "037"]
+
+
+optuna:
+  n_jobs: 4
+  enabled: true
+  pruner:
+    type: median
+    n_warmup_steps: 5
+  n_trials: 5
+  metric: [f1, malware_fpr]
+  directions: ["maximize", "minimize"]
+  hyperparameters:
+    ARFClassifier:
+      lambda_value:
+        type: int
+        low: 1
+        high: 20
+      n_models:
+        type: int
+        low: 5
+        high: 50
+    SGDClassifier:
+      alpha:
+        type: float
+        low: 0.0001
+        high: 0.1
+        log: true
+      loss:
+        type: categorical
+        choices: ["hinge", "log_loss"]
+    RandomForestClassifier:
+      n_estimators:
+        type: int
+        low: 5
+        high: 25
+      max_depth:
+        type: int
+        low: 2
+        high: 20
+    Mixer:
+      type:
+        type: categorical
+        choices: ["random", "sequence"]
+        # ["oversampling", "balanced", "random", "sequence"]
+      datasets:
+        type: categorical
+        multiple: true
+        choices: ["010", "008", "009", "011", "012", "013", "014"]
