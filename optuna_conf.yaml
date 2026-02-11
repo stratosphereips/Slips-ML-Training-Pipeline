@@ -73,7 +73,7 @@ optuna:
   hyperparameters:
     classifier_type:
       type: categorical
-      choices: [ARFClassifier, SGDClassifier, ADWINBoostingClassifier]
+      choices: [ARFClassifier, ADWINBoostingClassifier]
     ARFClassifier:
       lambda_value:
         type: int
@@ -109,7 +109,7 @@ optuna:
         low: 1.0e-8
         high: 1.0e-6
         log: true
-    SGDClassifier:
+    SGDClassifier: #if present, use this config
       alpha:
         type: float
         low: 0.0001
