@@ -74,6 +74,21 @@ Key modules:
 * `src/data_selectors.py` — mixers / batch composition
 * `src/conf_reader.py` — config loading & validation
 * `src/plot_utils/` — plotting helpers used by the pipeline
+* `src/metrics_calculator.py` — unified metrics calculation for pipeline and plotting scripts
+
+### MetricsCalculator
+The `MetricsCalculator` class provides a unified interface for computing metrics such as confusion matrix, F1, FPR, precision, recall, and more. It is used throughout the pipeline and plotting scripts to ensure consistent metric calculation and reporting.
+
+**Features:**
+- Computes per-class and aggregate metrics for binary and multi-class classification
+- Used in training, validation, and testing phases
+- Provides metrics for plotting scripts (e.g., `plot_train_perf.py`, `plot_test_perf.py`)
+- Ensures reproducibility and consistency of reported metrics
+
+**Usage in the pipeline:**
+- During training and validation, `MetricsCalculator` is used to compute metrics from predictions and ground truth labels
+- In plotting scripts, it aggregates metrics for visualization and reporting
+- All main metrics (F1, FPR, FNR, accuracy, precision, recall, MCC) are calculated using this class
 
 ---
 ## Output
