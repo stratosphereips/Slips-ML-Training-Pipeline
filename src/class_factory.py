@@ -14,8 +14,34 @@ Notes:
    not found.
 """
 
+
 from typing import Any
 import importlib
+
+# Central list of sklearn modules for classifier resolution
+sklearn_modules = [
+    "sklearn.linear_model",
+    "sklearn.ensemble",
+    "sklearn.svm",
+    "sklearn.naive_bayes",
+    "sklearn.tree",
+    # Add more as needed for future support
+]
+
+# Central list of river modules for classifier resolution (primary and nested)
+river_modules = [
+    "river.tree",
+    "river.ensemble",
+    "river.linear_model",
+    "river.forest",
+    "river.neighbors",
+    "river.naive_bayes",
+    "river.neural_net",
+    "river.preprocessing",
+    "river.compose",
+    "river.base",
+    # Add more as needed for future support
+]
 
 
 # -------------------------
@@ -102,25 +128,11 @@ def get_classifier_class(classifier_type: str):
     if "." in classifier_type:
         return _import_from_path(classifier_type)
 
-    sklearn_modules = [
-        "sklearn.linear_model",
-        "sklearn.ensemble",
-        "sklearn.svm",
-        "sklearn.naive_bayes",
-        "sklearn.tree",
-    ]
     Cls = _find_in_modules(classifier_type, sklearn_modules)
     if Cls is not None:
         return Cls
 
-    # try a small set of river modules (if installed)
-    river_modules = [
-        # If cannot find, add new submobules
-        "river.tree",
-        "river.ensemble",
-        "river.linear_model",
-        "river.forest"
-    ]
+    # try a central set of river modules (if installed)
     Cls = _find_in_modules(classifier_type, river_modules)
     if Cls is not None:
         return Cls
@@ -167,9 +179,7 @@ def prepare_river_nested_model_params(params: Any) -> Any:
         if "." in inner_type:
             InnerCls = _import_from_path(inner_type)
         else:
-            InnerCls = _find_in_modules(
-                inner_type, ["river.tree", "river.ensemble", "river.linear_model"]
-            )
+            InnerCls = _find_in_modules(inner_type, river_modules)
             if InnerCls is None:
                 # try dotted path fallback — may raise ImportError
                 InnerCls = _import_from_path(inner_type)

@@ -60,6 +60,20 @@ class OptunaOptimizer:
         with open(trial_cfg_path, "w") as f:
             import yaml
             yaml.safe_dump({"classifier_type": classifier_type, **params}, f)
+            # Save trial context (datasets, mixer, etc.)
+            trial_context_path = self.optuna_run_dir / f"trial{trial.number}_context.yaml"
+            def extract_trial_context(cfg):
+                # Remove optuna-specific keys
+                context = deepcopy(cfg)
+                context.pop("optuna", None)
+                # Optionally, only keep relevant keys
+                # whitelist = ["dataset_loader", "features", "preprocessing", "model", "commands", "paths", "classes", "batch_size_train", "batch_size_test", "seed", "root"]
+                # context = {k: context[k] for k in whitelist if k in context}
+                return context
+            trial_context = extract_trial_context(config)
+            with open(trial_context_path, "w") as f:
+                import yaml
+                yaml.safe_dump(trial_context, f)
         # Run pipeline (train+val), collect metrics
         pipeline = self.pipeline_cls(config, optuna_trial=trial, optuna_dir=self.optuna_run_dir)
         metrics = pipeline.run_optuna_trial()  # Should return dict with metric_names

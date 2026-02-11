@@ -50,7 +50,7 @@ commands:
     command: "train"
     mixer:
       type: "sequence"
-      datasets: ["010", "015", "011", "010"]
+      datasets: ["008", "009", "010", "011", "012", "013"]
 
   - name: "test_all"
     command: "test"
@@ -89,26 +89,30 @@ optuna:
         type: int
         low: 2
         high: 20
-      model__type:
-        type: categorical
-        choices: [HoeffdingAdaptiveTreeClassifier]
-      model__params__max_depth:
-        type: int
-        low: 5
-        high: 30
-      model__params__grace_period:
-        type: int
-        low: 50
-        high: 500
-      model__params__max_size:
-        type: int
-        low: 5
-        high: 50
-      model__params__delta:
-        type: float
-        low: 1.0e-8
-        high: 1.0e-6
-        log: true
+      model:
+        type: group
+        params:
+          type:
+            type: categorical
+            choices: [HoeffdingAdaptiveTreeClassifier]
+          params:
+            max_depth:
+              type: int
+              low: 5
+              high: 30
+            grace_period:
+              type: int
+              low: 50
+              high: 500
+            max_size:
+              type: int
+              low: 5
+              high: 50
+            delta:
+              type: float
+              low: 1.0e-8
+              high: 1.0e-6
+              log: true
     SGDClassifier: #if present, use this config
       alpha:
         type: float
