@@ -1,4 +1,3 @@
-
 ## Running the pipeline
 Run the pipeline from the repository root (provide a config file or directory):
 
@@ -185,8 +184,10 @@ pre-commit run --all-files
 
   * To reuse the pipeline’s training flow, extend `ClassifierWrapper` or implement the same `partial_fit`, `predict`, `save_classifier`, and `load_classifier` contract.
   * The factory `src.class_factory.get_wrapper_class` resolves wrapper names; add your wrapper class there (or reference it by dotted path in the config).
+* The library and module, where the model is from, has to be added to a list of searched libraries at the top of `src.class_factory` file. Do not skip this step, factory would produce None instead of classifier.
 * In the `model` config, point to the classifier type (short name or dotted path) and the wrapper name. **Note:** In Optuna mode, only the classifier type is varied dynamically; the wrapper is fixed per run (see notes below).
 
+---
 
 ### Add a new preprocessing step
 
