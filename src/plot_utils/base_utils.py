@@ -1,12 +1,16 @@
 # base_utils.py
 import os
+import sys
 import ast
 import re
 import traceback
 from typing import Dict, List, Optional
-
 import numpy as np
 import matplotlib.pyplot as plt
+
+# Ensure src/ is in sys.path for imports
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from metrics_calculator import MetricsCalculator
 
 # ============================================================================
 # METRIC DISPLAY CONFIGURATIONS
@@ -267,42 +271,13 @@ def parse_testing_log_line(line: str) -> Optional[Dict]:
 # ------------------------
 # Metric computations
 # ------------------------
+
+# Unified binary metrics calculation using MetricsCalculator
 def compute_binary_metrics(counts: Dict[str, int]) -> Dict[str, float]:
-    """
-    Given a dict with integer counts: {'TP':..., 'FP':..., 'TN':..., 'FN':...}
-    return a dict with:
-      accuracy, precision, recall, f1
-    """
-    tp = int(counts.get("TP", 0))
-    fp = int(counts.get("FP", 0))
-    tn = int(counts.get("TN", 0))
-    fn = int(counts.get("FN", 0))
-
-    total = tp + tn + fp + fn
-    accuracy = (tp + tn) / total if total > 0 else 0.0
-
-    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-    recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-    f1 = (
-        (2 * precision * recall / (precision + recall))
-        if (precision + recall) > 0
-        else 0.0
-    )
-
-    numerator = (tp * tn) - (fp * fn)
-    denominator = ((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn)) ** 0.5
-    mcc = numerator / denominator if denominator > 0 else 0.0
-
-    return {
-        "accuracy": accuracy,
-        "precision": precision,
-        "recall": recall,
-        "f1": f1,
-        "mcc": mcc,
-        "error_rate": (fp + fn) / total if total > 0 else 0.0,
-        "FPR": fp / (fp + tn) if (fp + tn) > 0 else 0.0,
-        "FNR": fn / (fn + tp) if (fn + tp) > 0 else 0.0,
-    }
+    mc = MetricsCalculator(labels=["Benign", "Malicious"])
+    # Fake arrays to use the same interface
+    # But we can use the binary_metrics method directly
+    return mc.binary_metrics(counts)
 
 
 def compute_multi_metrics(
