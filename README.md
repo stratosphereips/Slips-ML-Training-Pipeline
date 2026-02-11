@@ -129,6 +129,37 @@ Recall:               0.9135
 Class                 TP       TN       FP       FN     Prec      Rec       F1
 Malicious          59104     2929      993     5598   0.9835   0.9135   0.9472
 ```
+
+## Profiling the Pipeline
+
+You can profile the pipeline to find performance bottlenecks using Python's built-in cProfile and visualize the results with snakeviz.
+
+### Step-by-step:
+
+1. **Create a directory for profiling outputs (recommended):**
+  ```bash
+  mkdir -p profiling
+  ```
+
+2. **Run the pipeline with cProfile:**
+  ```bash
+  python -m cProfile -o profiling/profile.out run.py /path/to/config.yaml
+  ```
+  - This will save the profiling results to `profiling/profile.out`.
+
+3. **Visualize the results with snakeviz:**
+  - First, install snakeviz if you haven't:
+    ```bash
+    pip install snakeviz
+    ```
+  - Then run:
+    ```bash
+    snakeviz profiling/profile.out
+    ```
+  - This will open an interactive browser view to explore the performance profile.
+
+---
+
 ##  Code Testing
 Run unit tests:
 
