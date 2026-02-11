@@ -1,6 +1,5 @@
 
 import sys
-import json
 import subprocess
 from pathlib import Path
 import numpy as np
@@ -76,25 +75,12 @@ class ExperimentManager:
         self.test_plotting_script = test_script
 
     def prepare_dirs(self):
-        # create main experiment dir and output subdirs
-        try:
-            self.expdir.mkdir(parents=True, exist_ok=True)
-        except Exception as e:
-            print(f"[ERROR] Failed to create experiment directory: {self.expdir}. Exception: {e}")
+        # Only create output subdirectories, not the main experiment folder or config files
         for d in [self.output_dir, self.logs_dir, self.models_dir, self.preprocessing_dir, self.results_dir]:
             try:
                 d.mkdir(parents=True, exist_ok=True)
             except Exception as e:
                 print(f"[ERROR] Failed to create output subdirectory: {d}. Exception: {e}")
-
-        # save effective merged config in experiment root
-        cfg_path = self.expdir / "config_effective.json"
-        try:
-            with open(cfg_path, "w", encoding="utf-8") as fh:
-                json.dump(self.cfg, fh, indent=2)
-        except Exception as e:
-            print(f"[ERROR] Failed to write config_effective.json: {cfg_path}. Exception: {e}")
-
         # create readme if missing
         readme = self.expdir / "pipeline_run_log.txt"
         self.readme_path = readme
@@ -106,7 +92,6 @@ class ExperimentManager:
                 )
             except Exception as e:
                 print(f"[ERROR] Failed to create pipeline_run_log.txt: {readme}. Exception: {e}")
-        # Explicit check for output folder and log
         if not self.output_dir.exists():
             print(f"[WARNING] Output directory was not created: {self.output_dir}")
         if not self.readme_path.exists():
@@ -447,14 +432,13 @@ class PipelineRunner:
         executor.run_all()
         return True
 
-    def run_optuna_trial(self):
+    def run_optuna_trial(self, optuna_trial=None, optuna_dir=None):
         # Only run the first train command, skip test commands
         commands = self.cfg_reader.get_commands()
         train_cmds = [c for c in commands if c.get("command") == "train"]
         if not train_cmds:
             raise RuntimeError("No train command found for Optuna trial.")
         cmd = train_cmds[0]
-        # Prepare paths for logging
         self.exp.prepare_dirs()
         self.exp.validate_plotting_scripts()
         bm = BuildManager(self.cfg_reader, self.exp)
@@ -467,13 +451,20 @@ class PipelineRunner:
             self.preprocessor,
             self.classifier_wrapper,
         )
-        # Run only the selected train command
         idx = 0
         executor._ensure_command_paths(cmd, idx)
         executor._run_train(idx, cmd)
-        # After training, parse the log for metrics
         log_file = self.exp.logs_dir / f"{idx}_{cmd['name']}_train.log"
         f1, malware_fpr = self._extract_metrics_from_log(log_file)
+        # Save model and scaler for this trial if optuna_dir is provided
+        if optuna_dir is not None and optuna_trial is not None:
+            trial_dir = Path(optuna_dir) / f"trial_{optuna_trial.number}"
+            trial_dir.mkdir(parents=True, exist_ok=True)
+            # Save config, context, result, model, scaler
+            # Model
+            self.classifier_wrapper.save_classifier(path=str(trial_dir), name="model.bin")
+            # Scaler
+            self.preprocessor.save(base_path=str(trial_dir))
         return {"f1": f1, "malware_fpr": malware_fpr}
 
     def _extract_metrics_from_log(self, log_file):
