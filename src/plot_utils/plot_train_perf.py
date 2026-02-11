@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
+
 import argparse
 import os
+import sys
 import traceback
 import matplotlib.pyplot as plt
-
+# Ensure src/ is in sys.path for imports
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from metrics_calculator import MetricsCalculator
 from base_utils import (
     compute_binary_metrics,
     compute_multi_metrics,
@@ -50,8 +54,10 @@ def read_all_batches(logfile):
 
 def compute_malware_metrics(per_class):
     """
-    Compute malware-specific metrics by reusing binary metrics.
+    Compute malware-specific metrics using MetricsCalculator.
     """
+    mc = MetricsCalculator(labels=list(per_class.keys()))
+    # Use 'Malicious' or 'Malware' as the positive class
     malware_key = None
     for cls_name in per_class.keys():
         if cls_name.lower() in ("malware", "malicious"):
@@ -60,17 +66,14 @@ def compute_malware_metrics(per_class):
 
     if malware_key and malware_key in per_class:
         counts = per_class[malware_key]
-        binary_metrics = compute_binary_metrics(counts)
+        binary_metrics = mc.binary_metrics(counts)
         malware_metrics = {
-            "malware_fpr": binary_metrics["FPR"],
-            "malware_fnr": binary_metrics["FNR"],
+            "malware_fpr": binary_metrics["fpr"],
+            "malware_fnr": binary_metrics["fnr"],
             "malware_precision": binary_metrics["precision"],
             "malware_recall": binary_metrics["recall"],
             "malware_f1": binary_metrics["f1"],
-            "MCC": binary_metrics["mcc"],
-            "error_rate": binary_metrics["error_rate"],
         }
-
         tp = counts.get("TP", 0)
         fp = counts.get("FP", 0)
         malware_metrics["malware_fp_over_predicted"] = (
