@@ -150,20 +150,22 @@ class ConfigReader:
         # ------------------------------
         paths = effective_config.get("paths", {}) or {}
         paths.setdefault("experiment_dir", "./experiments")
-        exp_name = effective_config["experiment_name"]
-        base_experiments = Path(paths["experiment_dir"])
-        optuna_enabled = bool(effective_config.get("optuna", {}).get("enabled", False))
-        if optuna_enabled:
-            # For Optuna runs, always use the base experiment directory (no suffix)
-            exp_dir = base_experiments / exp_name
+        # If experiment_dir_resolved is already set, use it directly (run.py is authoritative)
+        if "experiment_dir_resolved" in paths:
+            exp_dir = Path(paths["experiment_dir_resolved"])
         else:
-            # For normal runs, increment suffix to avoid overwriting
-            exp_dir = base_experiments / exp_name
-            suffix = 0
-            while exp_dir.exists():
-                suffix += 1
-                exp_dir = base_experiments / f"{exp_name}_{suffix}"
-        paths["experiment_dir_resolved"] = str(exp_dir.resolve())
+            exp_name = effective_config["experiment_name"]
+            base_experiments = Path(paths["experiment_dir"])
+            optuna_enabled = bool(effective_config.get("optuna", {}).get("enabled", False))
+            if optuna_enabled:
+                exp_dir = base_experiments / exp_name
+            else:
+                exp_dir = base_experiments / exp_name
+                suffix = 0
+                while exp_dir.exists():
+                    suffix += 1
+                    exp_dir = base_experiments / f"{exp_name}_{suffix}"
+            paths["experiment_dir_resolved"] = str(exp_dir.resolve())
         effective_config["paths"] = paths
 
         # ------------------------------

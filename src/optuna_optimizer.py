@@ -76,7 +76,7 @@ class OptunaOptimizer:
                 yaml.safe_dump(trial_context, f)
         # Run pipeline (train+val), collect metrics
         pipeline = self.pipeline_cls(config, optuna_trial=trial, optuna_dir=self.optuna_run_dir)
-        metrics = pipeline.run_optuna_trial()  # Should return dict with metric_names
+        metrics = pipeline.run_optuna_trial(optuna_trial=trial, optuna_dir=self.optuna_run_dir)  # Save model/scaler in trial dir
         # Save results
         trial_result_path = self.optuna_run_dir / f"trial{trial.number}_result.json"
         with open(trial_result_path, "w") as f:
