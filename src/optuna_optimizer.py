@@ -1,3 +1,4 @@
+
 import optuna
 import json
 from pathlib import Path
@@ -6,16 +7,14 @@ import time
 
 
 class OptunaOptimizer:
-    def __init__(self, pipeline_cls, config_reader_cls, base_config, exp_dir, metric_names, search_space, n_trials=20, directions=("maximize", "minimize"), n_jobs=1):
+    def __init__(self, pipeline_cls, config_reader_cls, base_config, exp_dir, metric_names, search_space, n_trials=20, directions=("maximize", "minimize"), n_jobs=1, optuna_run_dir=None):
         self.pipeline_cls = pipeline_cls
         self.config_reader_cls = config_reader_cls
         self.base_config = deepcopy(base_config)
         self.exp_dir = Path(exp_dir)
-        # Place optuna directory at the same level as output
-        self.optuna_dir = self.exp_dir / "optuna"
-        self.optuna_dir.mkdir(parents=True, exist_ok=True)
-        self.optuna_log_path = self.optuna_dir / "optuna_trials.log"
-        self._log_optuna(f"[Optuna] Initialized optimizer at {self.optuna_dir}")
+        self.optuna_run_dir = Path(optuna_run_dir) if optuna_run_dir else (self.exp_dir / "optuna")
+        self.optuna_log_path = self.optuna_run_dir / "optuna_trials.log"
+        self._log_optuna(f"[Optuna] Initialized optimizer at {self.optuna_run_dir}")
         self.metric_names = metric_names
         self.search_space = search_space
         self.n_trials = n_trials
@@ -57,15 +56,15 @@ class OptunaOptimizer:
         params = self.suggest_params(trial, classifier_type)
         config["model"]["classifier_params"] = params
         # Save only changed params for this trial
-        trial_cfg_path = self.optuna_dir / f"trial{trial.number}_{self.exp_dir.name}_config.yaml"
+        trial_cfg_path = self.optuna_run_dir / f"trial{trial.number}_conf.yaml"
         with open(trial_cfg_path, "w") as f:
             import yaml
             yaml.safe_dump({"classifier_type": classifier_type, **params}, f)
         # Run pipeline (train+val), collect metrics
-        pipeline = self.pipeline_cls(config, optuna_trial=trial, optuna_dir=self.optuna_dir)
+        pipeline = self.pipeline_cls(config, optuna_trial=trial, optuna_dir=self.optuna_run_dir)
         metrics = pipeline.run_optuna_trial()  # Should return dict with metric_names
         # Save results
-        trial_result_path = self.optuna_dir / f"trial{trial.number}_{self.exp_dir.name}_result.json"
+        trial_result_path = self.optuna_run_dir / f"trial{trial.number}_result.json"
         with open(trial_result_path, "w") as f:
             json.dump(metrics, f, indent=2)
         t1 = time.time()
@@ -83,7 +82,7 @@ class OptunaOptimizer:
         study.optimize(self.objective, n_trials=self.n_trials, n_jobs=self.n_jobs)
         self._log_optuna("Study optimization finished.")
         # Save all trials summary
-        trials_csv = self.optuna_dir / "optuna_trials.csv"
+        trials_csv = self.optuna_run_dir / "optuna_trials.csv"
         import pandas as pd
         pd.DataFrame(self.trials_log).to_csv(trials_csv, index=False)
         # Save best params/summary
@@ -98,6 +97,6 @@ class OptunaOptimizer:
             "n_jobs": self.n_jobs
         }
         self._log_optuna(f"Optimization completed. Best trials summary: {json.dumps(summary, indent=2)}")
-        with open(self.optuna_dir / "optuna_summary.json", "w") as f:
+        with open(self.optuna_run_dir / "optuna_summary.json", "w") as f:
             json.dump(summary, f, indent=2)
         return study
