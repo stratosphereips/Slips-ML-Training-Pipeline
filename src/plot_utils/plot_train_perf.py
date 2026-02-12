@@ -3,288 +3,21 @@
 import argparse
 import os
 import sys
-import traceback
+
 import matplotlib.pyplot as plt
+
 # Ensure src/ is in sys.path for imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from metrics_calculator import MetricsCalculator
-from base_utils import (
+from base_utils import ensure_dir, plot_major_metrics_together
+from metrics_calculator import (
+    accumulate_training_metrics,
+    build_training_summary,
     compute_binary_metrics,
+    compute_malware_metrics,
     compute_multi_metrics,
-    ensure_dir,
-    parse_training_log_line,
-    plot_major_metrics_together,
+    detect_validation_split,
+    read_training_batches,
 )
-
-
-def read_all_batches(logfile):
-    entries = []
-    print(f"[INFO] Reading logfile: {logfile}")
-    with open(logfile, "r") as f:
-        for i, line in enumerate(f):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                data = parse_training_log_line(line)
-                if data is None:
-                    print(f"[WARN] Skipping unparsable line {i}: {line[:200]}")
-                    continue
-                # remove Background if present
-                if "per_class" in data:
-                    data["per_class"] = {
-                        k: v
-                        for k, v in data["per_class"].items()
-                        if k.lower() not in ("background", "bg")
-                    }
-                if "training_per_class" in data:
-                    data["training_per_class"] = {
-                        k: v
-                        for k, v in data["training_per_class"].items()
-                        if k.lower() not in ("background", "bg")
-                    }
-                entries.append(data)
-            except Exception:
-                print(f"[WARN] Failed to parse line {i}: {line[:200]}")
-                traceback.print_exc()
-                continue
-    # print(f"[INFO] Parsed {len(entries)} batches from logfile")
-    return entries
-
-
-def compute_malware_metrics(per_class):
-    """
-    Compute malware-specific metrics using MetricsCalculator.
-    """
-    mc = MetricsCalculator(labels=list(per_class.keys()))
-    # Use 'Malicious' or 'Malware' as the positive class
-    malware_key = None
-    for cls_name in per_class.keys():
-        if cls_name.lower() in ("malware", "malicious"):
-            malware_key = cls_name
-            break
-
-    if malware_key and malware_key in per_class:
-        counts = per_class[malware_key]
-        binary_metrics = mc.binary_metrics(counts)
-        malware_metrics = {
-            "malware_fpr": binary_metrics["fpr"],
-            "malware_fnr": binary_metrics["fnr"],
-            "malware_precision": binary_metrics["precision"],
-            "malware_recall": binary_metrics["recall"],
-            "malware_f1": binary_metrics["f1"],
-        }
-        tp = counts.get("TP", 0)
-        fp = counts.get("FP", 0)
-        malware_metrics["malware_fp_over_predicted"] = (
-            (fp / (tp + fp)) if (tp + fp) > 0 else 0.0
-        )
-    else:
-        malware_metrics = {
-            "malware_fpr": 0.0,
-            "malware_fnr": 0.0,
-            "malware_fp_over_predicted": 0.0,
-            "malware_precision": 0.0,
-            "malware_recall": 0.0,
-            "malware_f1": 0.0,
-            "MCC": 0.0,
-            "error_rate": 0.0,
-        }
-
-    return malware_metrics
-
-
-def process_batch_metrics(per_class, class_names):
-    batch_metrics_per_class = {}
-    for cls in class_names:
-        bin_metrics_per_class = compute_binary_metrics(per_class[cls])
-        bin_metrics_per_class.update(per_class[cls])
-        batch_metrics_per_class[cls] = bin_metrics_per_class
-
-    batch_multi = compute_multi_metrics(per_class)
-    batch_multi.update(compute_malware_metrics(per_class))
-
-    return batch_metrics_per_class, batch_multi
-
-
-def process_cumulative_metrics(cumul_class_counters, class_names):
-    cumul_metrics_per_class = {}
-    for cls in class_names:
-        bin_metrics_per_class = compute_binary_metrics(
-            cumul_class_counters[cls]
-        )
-        bin_metrics_per_class.update(cumul_class_counters[cls])
-        cumul_metrics_per_class[cls] = bin_metrics_per_class
-
-    cumul_multi = compute_multi_metrics(cumul_class_counters)
-    cumul_multi.update(compute_malware_metrics(cumul_class_counters))
-
-    return cumul_metrics_per_class, cumul_multi
-
-
-def accumulate_metrics(entries, has_validation_data):
-    """
-    Accumulate batch and cumulative metrics.
-
-    - If has_validation_data is False, returns 4 training lists:
-        (batch_metrics_per_class_train,
-         batch_metrics_multi_train,
-         cumul_metrics_multi_train,
-         cumul_metrics_per_class_train)
-
-    - If has_validation_data is True, returns 8 lists **(validation first, training second)**:
-        (batch_metrics_per_class_val,
-         batch_metrics_multi_val,
-         cumul_metrics_multi_val,
-         cumul_metrics_per_class_val,
-         batch_metrics_per_class_train,
-         batch_metrics_multi_train,
-         cumul_metrics_multi_train,
-         cumul_metrics_per_class_train)
-    """
-    print("[INFO] Accumulating batch and cumulative metrics...")
-
-    # training outputs (always used)
-    batch_metrics_per_class_train = []
-    batch_metrics_multi_train = []
-    cumul_metrics_multi_train = []
-    cumul_metrics_per_class_train = []
-
-    # validation outputs (only if has_validation_data)
-    if has_validation_data:
-        batch_metrics_per_class_val = []
-        batch_metrics_multi_val = []
-        cumul_metrics_multi_val = []
-        cumul_metrics_per_class_val = []
-
-    if not entries:
-        # nothing to do; return correct shape
-        if has_validation_data:
-            return (
-                batch_metrics_per_class_val,
-                batch_metrics_multi_val,
-                cumul_metrics_multi_val,
-                cumul_metrics_per_class_val,
-                batch_metrics_per_class_train,
-                batch_metrics_multi_train,
-                cumul_metrics_multi_train,
-                cumul_metrics_per_class_train,
-            )
-        else:
-            return (
-                batch_metrics_per_class_train,
-                batch_metrics_multi_train,
-                cumul_metrics_multi_train,
-                cumul_metrics_per_class_train,
-            )
-
-    first = entries[0]
-    class_name_sets = []
-    # training_predicted (if present)
-    if "training_predicted" in first and isinstance(
-        first["training_predicted"], dict
-    ):
-        class_name_sets.append(set(first["training_predicted"].keys()))
-    # training_per_class (explicit training per-class counts)
-    if "training_per_class" in first and isinstance(
-        first["training_per_class"], dict
-    ):
-        class_name_sets.append(set(first["training_per_class"].keys()))
-    # per_class (your parser's validation-per-class)
-    if "per_class" in first and isinstance(first["per_class"], dict):
-        class_name_sets.append(set(first["per_class"].keys()))
-    # validation_per_class (in case the parser used that name)
-    if "validation_per_class" in first and isinstance(
-        first["validation_per_class"], dict
-    ):
-        class_name_sets.append(set(first["validation_per_class"].keys()))
-
-    # union all discovered names; if nothing found, fall back to empty list
-    if class_name_sets:
-        class_names = sorted(set().union(*class_name_sets))
-    else:
-        class_names = []
-
-    # cumulative counters
-    cumul_class_counters_train = {
-        cls: {"TP": 0, "FP": 0, "TN": 0, "FN": 0} for cls in class_names
-    }
-    if has_validation_data:
-        cumul_class_counters_val = {
-            cls: {"TP": 0, "FP": 0, "TN": 0, "FN": 0} for cls in class_names
-        }
-
-    # iterate entries and accumulate
-    for data in entries:
-        # VALIDATION split (expected key: "per_class")
-        if has_validation_data:
-            validation_per_class = data.get(
-                "per_class",
-                {
-                    cls: {"TP": 0, "FP": 0, "TN": 0, "FN": 0}
-                    for cls in class_names
-                },
-            )
-            batch_per_class_val, batch_multi_val = process_batch_metrics(
-                validation_per_class, class_names
-            )
-            batch_metrics_per_class_val.append(batch_per_class_val)
-            batch_metrics_multi_val.append(batch_multi_val)
-
-            for cls in class_names:
-                for k in ("TP", "FP", "TN", "FN"):
-                    cumul_class_counters_val[cls][k] += int(
-                        validation_per_class.get(cls, {}).get(k, 0)
-                    )
-
-            cumul_per_class_val, cumul_multi_val = process_cumulative_metrics(
-                cumul_class_counters_val, class_names
-            )
-            cumul_metrics_per_class_val.append(cumul_per_class_val)
-            cumul_metrics_multi_val.append(cumul_multi_val)
-
-        # TRAINING split (expected key: "training_per_class")
-        training_per_class = data.get(
-            "training_per_class",
-            {cls: {"TP": 0, "FP": 0, "TN": 0, "FN": 0} for cls in class_names},
-        )
-        batch_per_class_train, batch_multi_train = process_batch_metrics(
-            training_per_class, class_names
-        )
-        batch_metrics_per_class_train.append(batch_per_class_train)
-        batch_metrics_multi_train.append(batch_multi_train)
-
-        for cls in class_names:
-            for k in ("TP", "FP", "TN", "FN"):
-                cumul_class_counters_train[cls][k] += int(
-                    training_per_class.get(cls, {}).get(k, 0)
-                )
-
-        cumul_per_class_train, cumul_multi_train = process_cumulative_metrics(
-            cumul_class_counters_train, class_names
-        )
-        cumul_metrics_per_class_train.append(cumul_per_class_train)
-        cumul_metrics_multi_train.append(cumul_multi_train)
-
-    # Return order: **validation first** (if present), then training — this matches your plotting code.
-    if has_validation_data:
-        return (
-            batch_metrics_per_class_val,
-            batch_metrics_multi_val,
-            cumul_metrics_multi_val,
-            cumul_metrics_per_class_val,
-            batch_metrics_per_class_train,
-            batch_metrics_multi_train,
-            cumul_metrics_multi_train,
-            cumul_metrics_per_class_train,
-        )
-    else:
-        return (
-            batch_metrics_per_class_train,
-            batch_metrics_multi_train,
-            cumul_metrics_multi_train,
-            cumul_metrics_per_class_train,
-        )
 
 
 def calculate_class_counts(entries, data_key, class_names):
@@ -716,43 +449,6 @@ def plot_malware_fp_over_predicted_comparison(
     )
 
 
-def print_summary_section(lines, title, metrics_data):
-    lines.append(f"\n=== {title} ===")
-    lines.append(
-        f"Accuracy:             {metrics_data.get('accuracy', 0):.4f}"
-    )
-    lines.append(
-        f"F1:                   {metrics_data.get('malware_f1', 0):.4f}"
-    )
-    lines.append(
-        f"FPR:                  {metrics_data.get('malware_fpr', 0):.4f}"
-    )
-    lines.append(
-        f"FNR:                  {metrics_data.get('malware_fnr', 0):.4f}"
-    )
-    lines.append(
-        f"Macro F1:             {metrics_data.get('macro_f1', 0):.4f}"
-    )
-    lines.append(
-        f"Precision:            {metrics_data.get('malware_precision', 0):.4f}"
-    )
-    lines.append(
-        f"Recall:               {metrics_data.get('malware_recall', 0):.4f}"
-    )
-    lines.append(f"MCC:                  {metrics_data.get('MCC', 0):.4f}")
-
-
-def print_per_class_table(lines, title, cum_metrics_per_class):
-    lines.append(f"\n=== {title} ===")
-    lines.append(
-        f"{'Class':<15} {'TP':>8} {'TN':>8} {'FP':>8} {'FN':>8} {'Acc':>8} {'Prec':>8} {'Rec':>8} {'F1':>8}"
-    )
-    m = cum_metrics_per_class['Malicious']
-    lines.append(
-        f"{'Malicious':<15} {m.get('TP', 0):8d} {m.get('TN', 0):8d} {m.get('FP', 0):8d} {m.get('FN', 0):8d} {m.get('accuracy', 0.0):8.4f} {m.get('precision', 0.0):8.4f} {m.get('recall', 0.0):8.4f} {m.get('f1', 0.0):8.4f}"
-    )
-
-
 def ensure_plot_subdirs(base_dir):
     subs = {}
     for name in ["per_batch", "aggregated", "last5", "last10", "last20"]:
@@ -817,17 +513,12 @@ def main():
     folder_dir = ensure_dir(os.path.join(base_dir, "training", args.exp))
     # print(f"[INFO] Output folder: {folder_dir}")
 
-    entries = read_all_batches(file_path)
+    entries = read_training_batches(file_path)
     if not entries:
         print("[ERROR] No entries parsed; exiting.")
         return
 
-    has_validation_data = any(
-        ("per_class" in e and bool(e["per_class"]))
-        or ("validation_per_class" in e and bool(e["validation_per_class"]))
-        or (e.get("testing_size", 0) > 0)
-        for e in entries
-    )
+    has_validation_data = detect_validation_split(entries)
 
     if has_validation_data:
         (
@@ -839,14 +530,14 @@ def main():
             batch_metrics_multi_training,
             cumul_metrics_multi_training,
             cumul_metrics_per_class_training,
-        ) = accumulate_metrics(entries, has_validation_data)
+        ) = accumulate_training_metrics(entries, has_validation_data)
     else:
         (
             batch_metrics_per_class,
             batch_metrics_multi,
             cumul_metrics_multi,
             cumul_metrics_per_class,
-        ) = accumulate_metrics(entries, has_validation_data)
+        ) = accumulate_training_metrics(entries, has_validation_data)
 
     if has_validation_data:
         validation_dir = ensure_dir(os.path.join(folder_dir, "validation"))
@@ -1261,48 +952,15 @@ def main():
             "last20",
         )
 
-    # summary
-    lines = []
-    if has_validation_data:
-        print_summary_section(
-            lines,
-            "VALIDATION Multi-class (Aggregated)",
-            cumul_metrics_multi[-1],
-        )
-        print_summary_section(
-            lines,
-            "TRAINING Multi-class (Aggregated)",
-            cumul_metrics_multi_training[-1],
-        )
-        print_per_class_table(
-            lines,
-            "Per-class metrics (Aggregated) - VALIDATION",
-            cumul_metrics_per_class[-1],
-        )
-        print_per_class_table(
-            lines,
-            "Per-class metrics (Aggregated) - TRAINING",
-            cumul_metrics_per_class_training[-1],
-        )
-    else:
-        print_summary_section(
-            lines, "TRAINING Multi-class (Aggregated)", cumul_metrics_multi[-1]
-        )
-        print_per_class_table(
-            lines,
-            "Per-class metrics (Aggregated) - TRAINING",
-            cumul_metrics_per_class[-1],
-        )
-
-    lines.append(f"\nSummary for Experiment {args.exp}:")
-    lines.append(f"Total batches processed: {batch_count}")
-    lines.append(
-        "Data type: Training/Validation split"
-        if has_validation_data
-        else "Data type: Training only"
+    summary_txt = build_training_summary(
+        args.exp,
+        batch_count,
+        has_validation_data,
+        cumul_metrics_multi,
+        cumul_metrics_per_class,
+        cumul_metrics_multi_training if has_validation_data else None,
+        cumul_metrics_per_class_training if has_validation_data else None,
     )
-
-    summary_txt = "\n".join(lines)
     summary_path = os.path.join(folder_dir, "summary.txt")
     with open(summary_path, "w") as f:
         f.write(summary_txt)

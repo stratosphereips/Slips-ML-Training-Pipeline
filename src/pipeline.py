@@ -455,7 +455,7 @@ class PipelineRunner:
         executor._ensure_command_paths(cmd, idx)
         executor._run_train(idx, cmd)
         log_file = self.exp.logs_dir / f"{idx}_{cmd['name']}_train.log"
-        f1, malware_fpr = self._extract_metrics_from_log(log_file)
+        f1, fpr = self._extract_metrics_from_log(log_file)
         # Save model and scaler for this trial if optuna_dir is provided
         if optuna_dir is not None and optuna_trial is not None:
             trial_dir = Path(optuna_dir) / f"trial_{optuna_trial.number}"
@@ -465,13 +465,13 @@ class PipelineRunner:
             self.classifier_wrapper.save_classifier(path=str(trial_dir), name="model.bin")
             # Scaler
             self.preprocessor.save(base_path=str(trial_dir))
-        return {"f1": f1, "malware_fpr": malware_fpr}
+        return {"f1": f1, "fpr": fpr}
 
     def _extract_metrics_from_log(self, log_file):
         # Parse the log file for final F1 and malware FPR
         # This is a placeholder: you may want to parse the last line or compute from metrics
         f1 = 0.0
-        malware_fpr = 1.0
+        fpr = 1.0
         try:
             with open(log_file, "r") as f:
                 lines = f.readlines()
@@ -490,11 +490,11 @@ class PipelineRunner:
                         precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
                         recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
                         f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
-                        malware_fpr = fp / (fp + tn) if (fp + tn) > 0 else 1.0
+                        fpr = fp / (fp + tn) if (fp + tn) > 0 else 1.0
                         break
         except Exception:
             pass
-        return f1, malware_fpr
+        return f1, fpr
 
 # -------------------------
 # CLI
