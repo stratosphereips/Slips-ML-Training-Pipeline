@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 import hashlib
 import json
+from functools import lru_cache
 
 
 class ZeekDataset:
@@ -282,6 +283,7 @@ class ZeekDataset:
 # -------------------
 
 
+@lru_cache(maxsize=None)
 def find_and_load_datasets(
     root_dir,
     batch_size=1000,
@@ -298,16 +300,27 @@ def find_and_load_datasets(
 
     import re
 
-    root = Path(root_dir)
-    if not root.exists():
-        raise FileNotFoundError(f"root_dir {root} does not exist")
+    # Normalize arguments before any filesystem access so the cache key is stable
+    root_path = Path(root_dir).resolve()
+    cache_path = Path(cache_dir).resolve() if cache_dir is not None else None
+    labeled_files = (
+        tuple(labeled_filenames)
+        if labeled_filenames is not None
+        else None
+    )
+    prefix_pattern = str(prefix_regex)
+    data_subdir = str(data_subdir)
+    file_encoding = str(file_encoding)
+    file_errors = str(file_errors)
+    shuffle_per_epoch = bool(shuffle_per_epoch)
 
-    pattern = re.compile(prefix_regex)
+    if not root_path.exists():
+        raise FileNotFoundError(f"root_dir {root_path} does not exist")
+
+    pattern = re.compile(prefix_pattern)
     loaders: Dict[str, ZeekDataset] = {}
 
-    for entry in sorted(root.iterdir()):
-        if not entry.is_dir():
-            continue
+    for entry in sorted(root_path.iterdir()):
         if not pattern.match(entry.name):
             continue
         data_path = entry / data_subdir
@@ -319,8 +332,8 @@ def find_and_load_datasets(
                 batch_size=batch_size,
                 seed=seed,
                 persist_cache_threshold=persist_cache_threshold,
-                cache_dir=cache_dir,
-                labeled_filenames=labeled_filenames,
+                cache_dir=cache_path,
+                labeled_filenames=labeled_files,
                 file_encoding=file_encoding,
                 file_errors=file_errors,
                 shuffle_per_epoch=shuffle_per_epoch,
