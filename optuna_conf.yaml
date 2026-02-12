@@ -6,12 +6,15 @@ validation_split: 0.1
 batch_size_train: 1000
 batch_size_test: 2000
 
-classes: ["Benign", "Malicious"]
+classes:
+  - "Benign"
+  - "Malicious"
 plotting_pths:
   training: "./src/plot_utils/plot_train_perf.py"
   testing: "./src/plot_utils/plot_test_perf.py"
 paths:
   experiment_dir: ./experiments
+
 dataset_loader:
   data_subdir: data
   persist_cache_threshold: 20000
@@ -23,6 +26,7 @@ dataset_loader:
   file_encoding: utf-8
   file_errors: ignore
   shuffle_per_epoch: false
+
 features:
   default_label: Benign
   protocols_to_discard:
@@ -32,6 +36,7 @@ features:
     - igmp
     - ipv6-icmp
     - ""
+
 preprocessing:
   steps:
     - name: "scaler"
@@ -39,27 +44,53 @@ preprocessing:
       params: {}
   save_steps: true
   step_filename_template: "{name}.bin"
+
 model:
   wrapper: RiverClassifierWrapper
-  classifier_type: ARFClassifier
+  classifier_type: river.forest.ARFClassifier
   classifier_params:
     lambda_value: 10
     n_models: 10
+
 commands:
-  - name: "train"
+  - name: "train_main"
     command: "train"
     mixer:
       type: "sequence"
-      datasets: ["008", "009", "010", "011", "012", "013"]
+      datasets:
+        - "008"
+        - "009"
+        - "010"
+        - "011"
+        - "012"
+        - "013"
 
   - name: "test_all"
     command: "test"
     mixer:
       type: "sequence"
-      datasets: ["001", "008", "009", "010", "011", "012", "013",
-                 "014", "015", "016", "017", "018", "020", "021",
-                 "025", "026", "030", "031", "035", "036", "037"]
-
+      datasets:
+        - "001"
+        - "008"
+        - "009"
+        - "010"
+        - "011"
+        - "012"
+        - "013"
+        - "014"
+        - "015"
+        - "016"
+        - "017"
+        - "018"
+        - "020"
+        - "021"
+        - "025"
+        - "026"
+        - "030"
+        - "031"
+        - "035"
+        - "036"
+        - "037"
 
 optuna:
   n_jobs: 2
@@ -67,67 +98,108 @@ optuna:
   pruner:
     type: median
     n_warmup_steps: 5
-  n_trials: 4
-  metric: [f1, malware_fpr]
-  directions: ["maximize", "minimize"]
+  n_trials: 3
+  metric:
+    - "f1"
+    - "fpr"
+  directions:
+    - "maximize"
+    - "minimize"
   hyperparameters:
-    classifier_type:
-      type: categorical
-      choices: [ARFClassifier, ADWINBoostingClassifier]
-    ARFClassifier:
-      lambda_value:
-        type: int
-        low: 1
-        high: 20
-      n_models:
-        type: int
-        low: 5
-        high: 50
-
-    ADWINBoostingClassifier:
-      n_models:
-        type: int
-        low: 2
-        high: 20
-      model:
-        type: group
-        params:
+    model:
+      classifier_type:
+        type: categorical
+        choices:
+          - "river.forest.ARFClassifier"
+          - "river.ensemble.ADWINBoostingClassifier"
+      classifier_params:
+        river.forest.ARFClassifier:
+          lambda_value:
+            type: int
+            low: 1
+            high: 20
+          n_models:
+            type: int
+            low: 5
+            high: 50
+          grace_period:
+            type: int
+            low: 25
+            high: 200
+        river.ensemble.ADWINBoostingClassifier:
+          n_models:
+            type: int
+            low: 2
+            high: 20
+          learning_rate:
+            type: float
+            low: 0.1
+            high: 1.0
+          model:
+            type:
+              type: categorical
+              choices:
+                - "HoeffdingAdaptiveTreeClassifier"
+                - "HoeffdingTreeClassifier"
+            params:
+              HoeffdingAdaptiveTreeClassifier:
+                max_depth:
+                  type: int
+                  low: 5
+                  high: 30
+                  when:
+                    model.classifier_params.ADWINBoostingClassifier.model.type:
+                      HoeffdingAdaptiveTreeClassifier
+                delta:
+                  type: float
+                  low: 1.0e-8
+                  high: 1.0e-5
+                  log: true
+                  when:
+                    model.classifier_params.ADWINBoostingClassifier.model.type:
+                      HoeffdingAdaptiveTreeClassifier
+              HoeffdingTreeClassifier:
+                grace_period:
+                  type: int
+                  low: 50
+                  high: 500
+                  when:
+                    model.classifier_params.ADWINBoostingClassifier.model.type:
+                      HoeffdingTreeClassifier
+                split_confidence:
+                  type: float
+                  low: 1.0e-7
+                  high: 1.0e-3
+                  log: true
+                  when:
+                    model.classifier_params.ADWINBoostingClassifier.model.type:
+                      HoeffdingTreeClassifier
+    commands:
+      - name: "train_main"
+        command: "train"
+        mixer:
           type:
             type: categorical
-            choices: [HoeffdingAdaptiveTreeClassifier]
-          params:
-            max_depth:
-              type: int
-              low: 5
-              high: 30
-            grace_period:
-              type: int
-              low: 50
-              high: 500
-            max_size:
-              type: int
-              low: 5
-              high: 50
-            delta:
-              type: float
-              low: 1.0e-8
-              high: 1.0e-6
-              log: true
-    SGDClassifier: #if present, use this config
-      alpha:
-        type: float
-        low: 0.0001
-        high: 0.1
-        log: true
-      loss:
-        type: categorical
-        choices: ["hinge", "log_loss"]
-    Mixer:
-      type:
-        type: categorical
-        choices: ["random", "sequence"]
-        # ["oversampling", "balanced", "random", "sequence"]
-      datasets:
-        type: categorical
-        multiple: true
-        choices: ["010", "008", "009", "011", "012", "013", "014"]
+            choices:
+              - "sequence"
+              - "random"
+          chunk_size:
+            type: int
+            low: 2000
+            high: 10000
+            when:
+              commands[0].mixer.type: "random"
+          datasets:
+            type: categorical
+            multiple: true
+            min: 3
+            max: 6
+            choices:
+              - "001"
+              - "008"
+              - "009"
+              - "010"
+              - "011"
+              - "012"
+              - "013"
+              - "014"
