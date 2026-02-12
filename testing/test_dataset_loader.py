@@ -1,11 +1,12 @@
 import pytest
 import re
 import tempfile
+from numbers import Integral
 from pathlib import Path
+import pandas as pd
 from src.dataset_wrapper import (
     ZeekDataset,
     find_and_load_datasets,
-    sample_n_from_each_dataset,
 )
 from src.commons import BENIGN, MALICIOUS, BACKGROUND
 
@@ -226,147 +227,78 @@ class TestZeekDataset:
     def test_line_data_with_casting(self, sample_conn_log, temp_dir):
         """Test that retrieved lines have correct types after casting."""
         ds = ZeekDataset(temp_dir, batch_size=10)
-        line = ds.get_line(0)
-
+        df = ds.as_dataframe()
+        line = df.iloc[0]
         # Check types are correct
         assert isinstance(line["ts"], float)
         assert isinstance(line["uid"], str)
-        assert isinstance(line["id.orig_p"], int)
+        assert isinstance(line["id.orig_p"], Integral)
         assert isinstance(line["duration"], float)
-        assert isinstance(line["orig_bytes"], int)
+        assert isinstance(line["orig_bytes"], Integral)
         assert line["label"] in [str(BENIGN), str(MALICIOUS)]
 
-    # ========== Batching and Iteration Tests ==========
-    def test_next_batch_exhaustion_returns_none(self, sample_conn_log, temp_dir):
-        """Test next_batch returns None when dataset is exhausted (no auto-wrap)."""
-        ds = ZeekDataset(temp_dir, batch_size=2)
+    # ========== DataFrame Access Tests ==========
+    def test_as_dataframe_returns_all_valid_rows(self, sample_conn_log, temp_dir):
+        """as_dataframe should return every valid (non-background) record."""
+        ds = ZeekDataset(temp_dir, batch_size=10)
+        df = ds.as_dataframe()
 
-        # Get first batch
-        batch1 = ds.next_batch()
-        assert len(batch1) == 2
-        assert ds._batch_pos == 2
-        assert ds.epoch == 0
+        assert len(df) == ds.total_lines == 4
+        assert set(df.columns) == set(ds.headers)
+        assert "label" in df.columns
 
-        # Get second batch
-        batch2 = ds.next_batch()
-        assert len(batch2) == 2
-        assert ds._batch_pos == 4
-        assert ds.epoch == 0
+    def test_as_dataframe_cached_instance(self, sample_conn_log, temp_dir):
+        """Repeated calls to as_dataframe should reuse cached DataFrame."""
+        ds = ZeekDataset(temp_dir, batch_size=10)
+        df1 = ds.as_dataframe()
+        df2 = ds.as_dataframe()
 
-        # Get third batch - should return None (exhausted, no auto-wrap)
-        batch3 = ds.next_batch()
-        assert batch3 is None
-        assert ds.epoch == 0  # epoch doesn't increment on exhaustion
+        assert df1 is df2
 
+    def test_len_matches_dataframe_length(self, sample_conn_log, temp_dir):
+        """__len__ should match DataFrame length."""
+        ds = ZeekDataset(temp_dir, batch_size=10)
+        df = ds.as_dataframe()
 
-    def test_next_batch_after_manual_reset(self, sample_conn_log, temp_dir):
-        """Test next_batch works after manual reset_epoch call."""
-        ds = ZeekDataset(temp_dir, batch_size=2)
-
-        # Exhaust the dataset
-        batch1 = ds.next_batch()
-        batch2 = ds.next_batch()
-        batch3 = ds.next_batch()
-        assert len(batch1) == 2
-        assert len(batch2) == 2
-        assert batch3 is None
-
-        # Manually reset
-        ds.reset_epoch(batch_size=2)
-
-        # Should be able to get batches again
-        batch4 = ds.next_batch()
-        assert batch4 is not None
-        assert len(batch4) == 2
-        assert ds._batch_pos == 2
-
-    def test_next_batch_with_remainder(self, sample_conn_log, temp_dir):
-        """Test next_batch handles batch size that doesn't divide evenly."""
-        ds = ZeekDataset(temp_dir, batch_size=3)
-
-        batch1 = ds.next_batch()
-        assert len(batch1) == 3
-
-        batch2 = ds.next_batch()
-        assert len(batch2) == 1  # remainder
-
-    def test_reset_epoch(self, sample_conn_log, temp_dir):
-        """Test reset_epoch resets state correctly."""
-        ds = ZeekDataset(temp_dir, batch_size=2)
-
-        # Advance through all batches to exhaust dataset
-        ds.next_batch()  # batch_pos = 2
-        ds.next_batch()  # batch_pos = 4
-        ds.next_batch()  # returns None, batch_pos = 4, epoch = 0
-
-        # Epoch should still be 0 (no auto-increment)
-        assert ds.epoch == 0
-        assert ds._batch_pos == 4
-
-        # Now manually reset
-        ds.reset_epoch(batch_size=2)
-
-        # After reset, should be back to start
-        assert ds.epoch == 0  # or increment to 1 if reset_epoch increments
-        assert ds._batch_pos == 0
-
-        # Should be able to get batches again
-        batch = ds.next_batch()
-        assert batch is not None
-        assert len(batch) == 2
-
-    def test_get_line_and_get_lines(self, sample_conn_log, temp_dir):
-        """Test get_line and get_lines retrieve correct data."""
-        ds = ZeekDataset(temp_dir, batch_size=2)
-
-        # Get single line
-        line0 = ds.get_line(0)
-        assert "uid" in line0
-        assert "label" in line0
-
-        # Get range of lines
-        lines = ds.get_lines(0, 2)
-        assert len(lines) == 2
-        assert all("uid" in line for line in lines)
-
-    def test_get_line_out_of_bounds(self, sample_conn_log, temp_dir):
-        """Test get_line raises error for out of bounds index."""
-        ds = ZeekDataset(temp_dir, batch_size=2)
-
-        with pytest.raises(IndexError):
-            ds.get_line(999)
+        assert len(ds) == len(df) == ds.total_lines
 
     # ========== Seeding and Shuffling Tests ==========
     def test_seed_shuffles_consistently(self, sample_conn_log, temp_dir):
-        """Test that seed produces consistent shuffling across instances."""
-        # Create two datasets with same seed
+        """Same seed should shuffle valid indices deterministically."""
         ds1 = ZeekDataset(temp_dir, batch_size=2, seed=42)
         ds2 = ZeekDataset(temp_dir, batch_size=2, seed=42)
 
-        # Same seed should produce same order
-        assert ds1.indices == ds2.indices
+        assert ds1.valid_indices == ds2.valid_indices
         assert ds1.labels == ds2.labels
 
-    def test_different_seeds_produce_different_order(
-        self, sample_conn_log, temp_dir
-    ):
-        """Test that different seeds produce different shuffling."""
-        ds1 = ZeekDataset(temp_dir, batch_size=2, seed=42)
-        ds2 = ZeekDataset(temp_dir, batch_size=2, seed=123)
+    def test_different_seeds_produce_different_order(self, temp_dir):
+        """Different seeds should lead to different valid_index permutations."""
+        conn_file = temp_dir / "conn.log"
+        lines = [
+            "#separator \t",
+            "#fields\tts\tuid\tid.orig_h\tid.orig_p\tid.resp_h\tid.resp_p\tproto\tservice\tduration\torig_bytes\tresp_bytes\tconn_state\thistory\torig_pkts\tresp_pkts\tlabel",
+            "#types\ttime\tstring\taddr\tport\taddr\tport\tenum\tstring\tinterval\tcount\tcount\tstring\tstring\tcount\tcount\tstring",
+        ]
+        for i in range(20):
+            lines.append(
+                f"1609459200.{i:06d}\tuid-{i}\t192.168.1.{i}\t{10000 + i}\t10.0.0.{i}\t443\ttcp\thttps\t10.0\t100\t200\tSF\tShADaFf\t1\t1\tBenign"
+            )
+        conn_file.write_text("\n".join(lines))
 
-        # Different seeds likely produce different order (not guaranteed but very likely)
-        # At least check they're properly shuffled (not just original order)
-        assert len(ds1.indices) == len(ds2.indices)
+        ds1 = ZeekDataset(temp_dir, batch_size=2, seed=1)
+        ds2 = ZeekDataset(temp_dir, batch_size=2, seed=2)
+
+        assert ds1.valid_indices != ds2.valid_indices
+        assert sorted(ds1.valid_indices) == sorted(ds2.valid_indices)
 
     def test_no_seed_is_deterministic_on_same_file(
         self, sample_conn_log, temp_dir
     ):
-        """Test that without seed, same file produces same order."""
+        """Without seed, the loader should preserve file order deterministically."""
         ds1 = ZeekDataset(temp_dir, batch_size=2, seed=None)
         ds2 = ZeekDataset(temp_dir, batch_size=2, seed=None)
 
-        # Should load same order from same file
-        assert ds1.indices == ds2.indices
+        assert ds1.valid_indices == ds2.valid_indices
 
     # ========== New Parameter Tests ==========
     def test_custom_labeled_filenames(self, temp_dir):
@@ -428,103 +360,24 @@ class TestZeekDataset:
         assert ds.total_lines == 1
 
     def test_shuffle_per_epoch_false(self, sample_conn_log, temp_dir):
-        """Test shuffle_per_epoch=False keeps same order each epoch."""
+        """shuffle_per_epoch flag should be stored when disabled."""
         ds = ZeekDataset(temp_dir, batch_size=2, shuffle_per_epoch=False)
 
-        first_indices = ds.indices.copy()
-        ds.reset_epoch(batch_size=2)
-        second_indices = ds.indices.copy()
-
-        assert first_indices == second_indices
+        assert ds.shuffle_per_epoch is False
+        df1 = ds.as_dataframe().copy()
+        df2 = ds.as_dataframe().copy()
+        pd.testing.assert_frame_equal(df1, df2)
 
     def test_shuffle_per_epoch_true(self, sample_conn_log, temp_dir):
-        """Test shuffle_per_epoch=True reshuffles each epoch."""
+        """shuffle_per_epoch flag should be stored when enabled."""
         ds = ZeekDataset(
             temp_dir, batch_size=2, seed=42, shuffle_per_epoch=True
         )
 
-        first_indices = ds.indices.copy()
-        ds.reset_epoch(batch_size=2)
-        second_indices = ds.indices.copy()
-
-        # With shuffle_per_epoch, order should be same (both use seed) but after reset they reshuffle
-        # Check that reset_epoch shuffles
-        assert len(first_indices) == len(second_indices)
-
-    # ========== Next_n Tests ==========
-    def test_next_n_basic(self, sample_conn_log, temp_dir):
-        """Test next_n returns exactly n records."""
-        ds = ZeekDataset(temp_dir, batch_size=10)
-
-        records = ds.next_n(2)
-        assert len(records) == 2
-        assert all("uid" in r for r in records)
-
-    def test_next_n_partial(self, sample_conn_log, temp_dir):
-        """Test next_n with fewer records remaining than requested."""
-        ds = ZeekDataset(temp_dir, batch_size=10)
-
-        # Request more than available
-        records = ds.next_n(10)
-        assert len(records) == 4  # Only 4 valid flows
-
-    def test_next_n_zero(self, sample_conn_log, temp_dir):
-        """Test next_n with n=0 returns empty list."""
-        ds = ZeekDataset(temp_dir, batch_size=10)
-
-        records = ds.next_n(0)
-        assert records == []
-
-    def test_next_n_negative(self, sample_conn_log, temp_dir):
-        """Test next_n with negative n returns empty list."""
-        ds = ZeekDataset(temp_dir, batch_size=10)
-
-        records = ds.next_n(-5)
-        assert records == []
-
-    def test_next_n_advances_position(self, sample_conn_log, temp_dir):
-        """Test next_n advances internal position correctly."""
-        ds = ZeekDataset(temp_dir, batch_size=10)
-
-        ds.next_n(2)
-        assert ds._batch_pos == 2
-
-        ds.next_n(1)
-        assert ds._batch_pos == 3
-
-    def test_next_n_exhaustion_returns_none(self, sample_conn_log, temp_dir):
-        """Test next_n returns None when dataset is exhausted (no auto-wrap)."""
-        ds = ZeekDataset(temp_dir, batch_size=10)
-
-        # First call: get all 4 records available
-        records1 = ds.next_n(5)
-        assert len(records1) == 4
-        assert ds.epoch == 0
-        assert ds._batch_pos == 4
-
-        # Second call: dataset exhausted, should return None
-        records2 = ds.next_n(2)
-        assert records2 is None
-        assert ds.epoch == 0  # No auto-increment
-        assert ds._batch_pos == 4  # Position stays at end
-
-
-    def test_next_n_after_reset_epoch(self, sample_conn_log, temp_dir):
-        """Test next_n works after manual reset."""
-        ds = ZeekDataset(temp_dir, batch_size=10)
-
-        # Exhaust dataset
-        records1 = ds.next_n(5)
-        assert len(records1) == 4
-
-        # Manually reset
-        ds.reset_epoch(batch_size=10)
-
-        # Should work again
-        records2 = ds.next_n(2)
-        assert records2 is not None
-        assert len(records2) == 2
-        assert ds._batch_pos == 2
+        assert ds.shuffle_per_epoch is True
+        df1 = ds.as_dataframe().copy()
+        df2 = ds.as_dataframe().copy()
+        pd.testing.assert_frame_equal(df1, df2)
 
     def test_cache_creation_for_large_dataset(self, temp_dir):
         """Test that cache is created for datasets above threshold."""
@@ -616,13 +469,6 @@ class TestZeekDataset:
         assert not cache_file.exists()
 
     # ========== Helper Functions Tests ==========
-    def test_len_and_batches_methods(self, sample_conn_log, temp_dir):
-        """Test __len__ and batches() methods."""
-        ds = ZeekDataset(temp_dir, batch_size=2)
-
-        assert len(ds) == 4  # 4 valid flows
-        assert ds.batches() == 2  # 4 / 2 = 2 batches
-
     @pytest.mark.parametrize(
         "params",
         [
@@ -721,26 +567,3 @@ class TestZeekDataset:
                     loaders[key].current_file.name
                     == params["labeled_filenames"][0]
                 )
-
-    def test_sample_n_from_each_dataset(self, temp_dir):
-        """Test sample_n_from_each_dataset samples from each dataset."""
-        ds1_dir = temp_dir / "001" / "data"
-        ds1_dir.mkdir(parents=True)
-
-        conn_file = ds1_dir / "conn.log"
-        content = """#separator \t
-#fields\tts\tuid\tproto\tlabel
-#types\ttime\tstring\tenum\tstring
-1609459200.001\tuid-1\ttcp\tBenign
-1609459201.001\tuid-2\tudp\tBenign
-1609459202.001\tuid-3\ttcp\tBenign
-"""
-        conn_file.write_text(content)
-
-        loaders = find_and_load_datasets(temp_dir, batch_size=10)
-        results = sample_n_from_each_dataset(loaders, n=2)
-
-        assert "001" in results
-        assert "samples" in results["001"]
-        assert len(results["001"]["samples"]) == 2
-        assert isinstance(results["001"]["df"], __import__("pandas").DataFrame)

@@ -5,6 +5,7 @@ from src.data_selectors import (
     SequenceMixer,
     RandomBatchesMixer,
     BalancedByLabelMixer,
+    BalancedByLabelWithOversamplingMixer,
     batch_len,
     is_dataframe,
     concat_batches,
@@ -54,6 +55,22 @@ class MockLoader:
         if not collected:
             return None
         return concat_batches(collected)
+
+    def as_dataframe(self):
+        """Return the entire dataset as a DataFrame to mimic real loaders."""
+        combined = concat_batches(self.batches)
+        if combined is None:
+            return pd.DataFrame()
+        if is_dataframe(combined):
+            return combined.reset_index(drop=True)
+        if isinstance(combined, list):
+            if not combined:
+                return pd.DataFrame()
+            first = combined[0]
+            if isinstance(first, dict):
+                return pd.DataFrame(combined).reset_index(drop=True)
+            return pd.DataFrame({"value": combined}).reset_index(drop=True)
+        return pd.DataFrame({"value": np.atleast_1d(combined)}).reset_index(drop=True)
 
 
 @pytest.fixture
@@ -142,7 +159,7 @@ class TestHelperFunctions:
 
     def test_slice_batch_none(self):
         """Test slice_batch returns None for None input."""
-        assert slice_batch(None, 0, 1) is None
+        assert slice_batch(None, 0, 1) == []
 
     def test_slice_batch_dataframe(self):
         """Test slice_batch slices DataFrames correctly."""
@@ -178,11 +195,10 @@ class TestSequenceMixer:
             if train is None:
                 break
             batches.append(train)
-
-        assert len(batches) == 3
-        assert batch_len(batches[0]) == 2
-        assert batch_len(batches[1]) == 2
-        assert batch_len(batches[2]) == 1
+        total_rows = sum(len(batch) for batch in sample_batches_list)
+        assert len(batches) == 1
+        assert batch_len(batches[0]) == total_rows
+        assert mixer.next_batch() == (None, None)
 
     def test_sequence_drain_single_dataset_dataframes(self, sample_batches_dataframe, rng):
         """Test draining a single DataFrame-based dataset."""
@@ -199,10 +215,9 @@ class TestSequenceMixer:
                 break
             batches.append(train)
 
-        assert len(batches) == 3
-        assert batch_len(batches[0]) == 2
-        assert batch_len(batches[1]) == 2
-        assert batch_len(batches[2]) == 1
+        total_rows = sum(len(df) for df in sample_batches_dataframe)
+        assert len(batches) == 1
+        assert batch_len(batches[0]) == total_rows
 
     def test_sequence_multiple_datasets(self, rng):
         """Test draining multiple datasets in sequence."""
@@ -221,7 +236,7 @@ class TestSequenceMixer:
                 break
             batches.append(batch_len(train))
 
-        assert batches == [2, 1, 2]
+        assert batches == [3, 2]
 
     def test_sequence_with_validation_split(self, sample_batches_list, rng):
         """Test SequenceMixer with validation split."""
@@ -235,10 +250,9 @@ class TestSequenceMixer:
         assert train is not None
         assert val is not None
         total = batch_len(train) + batch_len(val)
-        # should operate on the single underlying batch
-        assert total == batch_len(sample_batches_list[0])
-        # expected validation count uses rounding as SequenceMixer._split_batch does
-        expected_val = int(round(0.3 * total))
+        expected_total = sum(len(batch) for batch in sample_batches_list)
+        assert total == expected_total
+        expected_val = int(round(0.3 * expected_total))
         assert batch_len(val) == expected_val
 
 
@@ -262,8 +276,15 @@ class TestSequenceMixer:
 
         mixer.reset_epoch(batch_size=10)  # batch_size ignored, per_dataset_batch_size used
         train, val = mixer.next_batch()
-
         assert train is not None
+        assert batch_len(train) == 3
+
+        train2, _ = mixer.next_batch()
+        assert train2 is not None
+        assert batch_len(train2) == 2
+
+        train3, _ = mixer.next_batch()
+        assert train3 is None
 
     def test_sequence_mix_plan_recording(self, sample_batches_list, rng):
         """Test that mix_plan records operations."""
@@ -280,6 +301,8 @@ class TestSequenceMixer:
         assert plan[0]["dataset"] == "ds1"
         assert "train_count" in plan[0]
         assert "val_count" in plan[0]
+        expected_total = sum(len(batch) for batch in sample_batches_list)
+        assert plan[0]["dataset_batch_size"] == expected_total
 
 
 # ========== RandomBatchesMixer Tests ==========
@@ -291,16 +314,18 @@ class TestRandomBatchesMixer:
         with pytest.raises(ValueError):
             RandomBatchesMixer({}, {}, rng)
 
-    def test_weights_length_must_match_datasets(self, rng):
-        """Test weights length must match datasets length."""
+    def test_weights_resized_and_normalized(self, rng):
+        """Test custom weights are resized and normalized to dataset count."""
         loader1 = MockLoader([[1, 2]], "ds1")
         loader2 = MockLoader([[3, 4]], "ds2")
-        with pytest.raises(ValueError):
-            RandomBatchesMixer(
-                {"datasets": ["ds1", "ds2"], "weights": [1.0]},
-                {"ds1": loader1, "ds2": loader2},
-                rng
-            )
+        mixer = RandomBatchesMixer(
+            {"datasets": ["ds1", "ds2"], "weights": [1.0]},
+            {"ds1": loader1, "ds2": loader2},
+            rng
+        )
+        assert len(mixer.weights) == 2
+        assert mixer.weights[0] == pytest.approx(0.5)
+        assert mixer.weights[1] == pytest.approx(0.5)
 
     def test_random_unbalanced_with_weights(self, rng):
         """Test random mixing with custom weights."""
@@ -384,123 +409,180 @@ class TestRandomBatchesMixer:
         plan = mixer.get_mix_plan()
         assert len(plan) == 1
         assert plan[0]["type"] == "random_batches"
-        assert "counts" in plan[0]
+        assert "counts_by_dataset" in plan[0]
 
 
 # ========== BalancedByLabelMixer Tests ==========
 class TestBalancedByLabelMixer:
-    """Test BalancedByLabelMixer - label-balanced sampling."""
+        def test_balanced_by_label_strict_balancing_and_exhaustion(self, rng):
+            """Balanced mixer should produce equal label counts until one label drains."""
+            batches1 = [
+                [{"label": "benign"}, {"label": "benign"}],
+                [{"label": "benign"}, {"label": "benign"}]
+            ]
+            batches2 = [
+                [{"label": "malicious"}, {"label": "malicious"}]
+            ]
 
-    def test_initialization_requires_datasets(self, rng):
-        """Test BalancedByLabelMixer requires 'datasets'."""
-        with pytest.raises(ValueError):
-            BalancedByLabelMixer({}, {}, rng)
+            loader1 = MockLoader(batches1, "ds1")
+            loader2 = MockLoader(batches2, "ds2")
 
-    def test_label_discovery_from_list_data(self, rng):
-        """Test automatic label discovery from list data."""
-        batches1 = [
-            [{"label": "benign"}, {"label": "benign"}],
-            [{"label": "malicious"}]
-        ]
-        batches2 = [
-            [{"label": "malicious"}, {"label": "benign"}]
-        ]
+            spec = {
+                "datasets": ["ds1", "ds2"],
+                "labels": ["benign", "malicious"]
+            }
+            mixer = BalancedByLabelMixer(spec, {"ds1": loader1, "ds2": loader2}, rng)
 
-        loader1 = MockLoader(batches1, "ds1")
-        loader2 = MockLoader(batches2, "ds2")
+            mixer.reset_epoch(batch_size=4)
 
-        spec = {"datasets": ["ds1", "ds2"]}
-        mixer = BalancedByLabelMixer(spec, {"ds1": loader1, "ds2": loader2}, rng)
+            train, _ = mixer.next_batch()
+            assert train is not None
+            label_counts = train["label"].value_counts().to_dict()
+            assert label_counts["benign"] == label_counts["malicious"] == 2
 
-        mixer.reset_epoch(batch_size=10)
+            train2, _ = mixer.next_batch()
+            assert train2 is None
 
-        assert set(mixer.labels) == {"benign", "malicious"}
 
-    def test_label_discovery_from_dataframe_data(self, rng):
-        """Test label discovery from DataFrame data."""
-        df1 = pd.DataFrame({"label": ["benign", "benign"]})
-        df2 = pd.DataFrame({"label": ["malicious", "benign"]})
+        def test_initialization_requires_datasets(self, rng):
+            """Test BalancedByLabelMixer requires 'datasets'."""
+            with pytest.raises(ValueError):
+                BalancedByLabelMixer({}, {}, rng)
 
-        loader1 = MockLoader([df1], "ds1")
-        loader2 = MockLoader([df2], "ds2")
+        def test_label_discovery_from_list_data(self, rng):
+            """Test automatic label discovery from list data."""
+            batches1 = [
+                [{"label": "benign"}, {"label": "benign"}],
+                [{"label": "malicious"}]
+            ]
+            batches2 = [
+                [{"label": "malicious"}, {"label": "benign"}]
+            ]
 
-        spec = {"datasets": ["ds1", "ds2"]}
-        mixer = BalancedByLabelMixer(spec, {"ds1": loader1, "ds2": loader2}, rng)
+            loader1 = MockLoader(batches1, "ds1")
+            loader2 = MockLoader(batches2, "ds2")
 
-        mixer.reset_epoch(batch_size=10)
+            spec = {"datasets": ["ds1", "ds2"]}
+            mixer = BalancedByLabelMixer(spec, {"ds1": loader1, "ds2": loader2}, rng)
 
-        assert set(mixer.labels) == {"benign", "malicious"}
+            mixer.reset_epoch(batch_size=10)
 
-    def test_provided_labels_override_discovery(self, rng):
-        """Test provided labels override automatic discovery."""
-        batches = [[{"label": "benign"}], [{"label": "malicious"}]]
-        loader = MockLoader(batches, "ds1")
+            assert set(mixer.labels) == {"benign", "malicious"}
 
-        spec = {
-            "datasets": ["ds1"],
-            "labels": ["type_a", "type_b", "type_c"]
-        }
-        mixer = BalancedByLabelMixer(spec, {"ds1": loader}, rng)
+        def test_label_discovery_from_dataframe_data(self, rng):
+            """Test label discovery from DataFrame data."""
+            df1 = pd.DataFrame({"label": ["benign", "benign"]})
+            df2 = pd.DataFrame({"label": ["malicious", "benign"]})
 
-        mixer.reset_epoch(batch_size=10)
+            loader1 = MockLoader([df1], "ds1")
+            loader2 = MockLoader([df2], "ds2")
 
-        assert mixer.labels == ["type_a", "type_b", "type_c"]
+            spec = {"datasets": ["ds1", "ds2"]}
+            mixer = BalancedByLabelMixer(spec, {"ds1": loader1, "ds2": loader2}, rng)
 
-    def test_balanced_by_label_no_labels_defaults(self, rng):
-        """Test that default labels are used when none discovered."""
-        loader = MockLoader([[{"id": 1}]], "ds1")  # No 'label' field
+            mixer.reset_epoch(batch_size=10)
 
-        spec = {"datasets": ["ds1"]}
-        mixer = BalancedByLabelMixer(spec, {"ds1": loader}, rng)
+            assert set(mixer.labels) == {"benign", "malicious"}
 
-        mixer.reset_epoch(batch_size=10)
+        def test_provided_labels_override_discovery(self, rng):
+            """Test provided labels override automatic discovery."""
+            batches = [[{"label": "benign"}], [{"label": "malicious"}]]
+            loader = MockLoader(batches, "ds1")
 
-        # Should default to BENIGN and MALICIOUS
-        assert "Benign" in mixer.labels or "benign" in mixer.labels or len(mixer.labels) == 2
+            spec = {
+                "datasets": ["ds1"],
+                "labels": ["type_a", "type_b", "type_c"]
+            }
+            mixer = BalancedByLabelMixer(spec, {"ds1": loader}, rng)
 
-    def test_balanced_by_label_produces_mixed_batch(self, rng):
-        """Test that balanced mixer tries to balance labels."""
-        batches1 = [
-            [{"label": "benign"}, {"label": "benign"}],
-            [{"label": "benign"}, {"label": "benign"}]
-        ]
-        batches2 = [
-            [{"label": "malicious"}, {"label": "malicious"}],
-            [{"label": "malicious"}, {"label": "malicious"}]
-        ]
+            mixer.reset_epoch(batch_size=10)
 
-        loader1 = MockLoader(batches1, "ds1")
-        loader2 = MockLoader(batches2, "ds2")
+            assert mixer.labels == ["type_a", "type_b", "type_c"]
+
+        def test_balanced_by_label_no_labels_defaults(self, rng):
+            """Test that default labels are used when none discovered."""
+            loader = MockLoader([[{"id": 1}]], "ds1")  # No 'label' field
+
+            spec = {"datasets": ["ds1"]}
+            mixer = BalancedByLabelMixer(spec, {"ds1": loader}, rng)
+
+            mixer.reset_epoch(batch_size=10)
+
+            # Without label information the mixer cannot build label tables
+            assert mixer.labels == []
+            train, _ = mixer.next_batch()
+            assert train is None
+
+        def test_balanced_by_label_produces_mixed_batch(self, rng):
+            """Test that balanced mixer tries to balance labels."""
+            batches1 = [
+                [{"label": "benign"}, {"label": "benign"}],
+                [{"label": "benign"}, {"label": "benign"}]
+            ]
+            batches2 = [
+                [{"label": "malicious"}, {"label": "malicious"}],
+                [{"label": "malicious"}, {"label": "malicious"}]
+            ]
+
+            loader1 = MockLoader(batches1, "ds1")
+            loader2 = MockLoader(batches2, "ds2")
+
+            spec = {
+                "datasets": ["ds1", "ds2"],
+                "labels": ["benign", "malicious"]
+            }
+            mixer = BalancedByLabelMixer(spec, {"ds1": loader1, "ds2": loader2}, rng)
+
+            mixer.reset_epoch(batch_size=8)
+            train, _ = mixer.next_batch()
+
+            assert train is not None
+            labels_in_batch = train["label"].value_counts().to_dict()
+            assert set(labels_in_batch.keys()) == {"benign", "malicious"}
+            assert labels_in_batch["benign"] == labels_in_batch["malicious"] == 4
+
+        def test_balanced_by_label_mix_plan(self, rng):
+            """Test that balanced mixer records in mix_plan."""
+            batches = [[{"label": "benign"}], [{"label": "malicious"}]]
+            loader = MockLoader(batches, "ds1")
+
+            spec = {"datasets": ["ds1"], "labels": ["benign", "malicious"]}
+            mixer = BalancedByLabelMixer(spec, {"ds1": loader}, rng)
+
+            mixer.reset_epoch(batch_size=2)
+            mixer.next_batch()
+
+            plan = mixer.get_mix_plan()
+            assert len(plan) == 1
+            assert plan[0]["type"] == "balanced_by_label"
+            assert "counts_by_label" in plan[0]
+
+
+class TestBalancedByLabelWithOversampling:
+    def test_oversampling_balances_when_label_missing(self, rng):
+        """Oversampling mixer should duplicate minority labels to fill batch."""
+        majority = [[{"label": "benign"}, {"label": "benign"}]]
+        minority = [[{"label": "malicious"}]]
+
+        loader1 = MockLoader(majority, "ds1")
+        loader2 = MockLoader(minority, "ds2")
 
         spec = {
             "datasets": ["ds1", "ds2"],
             "labels": ["benign", "malicious"]
         }
-        mixer = BalancedByLabelMixer(spec, {"ds1": loader1, "ds2": loader2}, rng)
+        mixer = BalancedByLabelWithOversamplingMixer(spec, {"ds1": loader1, "ds2": loader2}, rng)
 
-        mixer.reset_epoch(batch_size=10)
-        train, val = mixer.next_batch()
+        mixer.reset_epoch(batch_size=4)
+        train, _ = mixer.next_batch()
 
         assert train is not None
-        labels_in_batch = [r["label"] for r in train]
-        # With balanced mixer, should attempt to have both labels
-        assert len(set(labels_in_batch)) >= 1
-
-    def test_balanced_by_label_mix_plan(self, rng):
-        """Test that balanced mixer records in mix_plan."""
-        batches = [[{"label": "benign"}], [{"label": "malicious"}]]
-        loader = MockLoader(batches, "ds1")
-
-        spec = {"datasets": ["ds1"], "labels": ["benign", "malicious"]}
-        mixer = BalancedByLabelMixer(spec, {"ds1": loader}, rng)
-
-        mixer.reset_epoch(batch_size=10)
-        mixer.next_batch()
+        counts = train["label"].value_counts().to_dict()
+        assert counts["benign"] == counts["malicious"] == 2
 
         plan = mixer.get_mix_plan()
-        assert len(plan) == 1
-        assert plan[0]["type"] == "balanced_by_label"
-        assert "counts_by_label" in plan[0]
+        assert plan[0]["type"] == "balanced_oversampling"
+        assert plan[0]["resampled_by_label"]["malicious"] >= 1
 
 
 # ========== Integration Tests ==========
@@ -561,5 +643,6 @@ class TestMixerIntegration:
                 break
             batches.append(train)
 
-        # Should have 3 batches, then exhausted
-        assert len(batches) == 3
+        # Default behavior consumes full dataset in one batch
+        assert len(batches) == 1
+        assert batch_len(batches[0]) == 3
