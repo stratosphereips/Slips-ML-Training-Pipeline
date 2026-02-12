@@ -1,66 +1,3 @@
-## Running the pipeline
-Run the pipeline from the repository root (provide a config file or directory):
-
-- Short version:
-```bash
-python run.py /path/to/config_or_config_dir
-```
-
-- Long version:
-1. Prepare the `default_config.yaml` or `optuna_conf.yaml` as needed.
-2. Ensure `root` points to your dataset root with subfolders (e.g. `root/001/data/conn.log.labeled`).
-3. Run `python run.py /path/to/config [--optuna]`. If you don't provide a config, `default_config.yaml` is used.
-4. Inspect experiment outputs in `experiments/<experiment_name>`. For Optuna runs, see the `optuna/` subfolder for all trial logs and configs.
-
-If you omit the argument the pipeline will look for a config in the current directory (`.`).
-Results are written under `experiments/<experiment_name>`, but if a folder with the same name already exists, a numeric suffix is appended (e.g., `<experiment_name>_1`, `<experiment_name>_2`, etc.) to ensure previous results are not overwritten. The experiment folder name is generated centrally from the config and passed to all pipeline modules. Inner file names and subdirectory structures remain unchanged.
-
----
-
-## Configuration
-
-The pipeline is **fully config-driven**. All experiment settings, including dataset roots, preprocessing, model/wrapper, and Optuna search spaces, are defined in YAML config files. The config is parsed by `ConfigReader` and passed to all modules.
-
-**Key config files:**
-- `default_config.yaml`: Standard pipeline config for normal runs.
-- `optuna_conf.yaml`: Example config for Optuna search (see Optuna section above).
-
----
-
-## Installation
-
-Create an environment and install dependencies:
-
-```bash
-conda create -n slips-ml-pipeline python=3.10 pip -y
-conda activate slips-ml-pipeline
-pip install -r requirements.txt
-```
-Feel free to use simpler environments, like `venv` instead of conda
-If you will fetch large Zeek datasets via Git, install Git LFS:
-
-```bash
-git lfs install
-# optionally add the recommended dataset submodule
-git submodule add https://github.com/stratosphereips/security-datasets-for-testing dataset-private
-```
-
----
-## Overview
-This project provides a modular and scalable **machine learning pipeline** built in **Python** for data preprocessing, model training, evaluation for purpose of offline training models to be used in SLIPS ML modules. The models we are interested in support online learning and are able to be "extended" by partial fit, transfer learning and alike.
-
-This repo is a compact, config-driven pipeline to:
-
-* discover Zeek-style datasets in a dataset directory
-* normalize flows to a canonical SLIPS format
-* extract numeric features
-* apply a configurable preprocessing pipeline
-* train online-capable classifiers (sklearn / River wrapped)
-* log metrics and invoke plotting scripts to generate figures
-
-The configuration controls dataset roots, preprocessing steps, model spec, mixers and commands.
-
----
 
 ## Architecture
 
@@ -72,7 +9,7 @@ The pipeline is assembled end-to-end at runtime from the YAML config:
 4. **Mixing layer** – Mixers in `data_selectors.py` take the full DataFrames, optionally shuffle them per epoch, and emit train/validation splits following the selected strategy (sequence, random, balanced, oversampling). Because they operate on cached tables, batching decisions are deterministic and memory-friendly.
 5. **Feature + preprocessing stage** – For each emitted batch, `FeatureExtraction` cleans, engineers, and reorders numerical features while returning aligned labels. The batch then flows through the configured `PreprocessingWrapper`, which chains sklearn-compatible transformers (e.g., scalers, PCA) and persists their fitted state per experiment.
 6. **Model stage** – `ClassifierWrapper` (Sklearn or River) abstracts the underlying estimator’s `partial_fit`, `predict`, and persistence routines, handles missing-class bootstrapping, and stores artifacts under the experiment directory.
-7. **Execution + logging** – `CommandExecutor` loops over `train`/`test` commands, drives mixers until exhaustion, logs metrics through `Logger`, and triggers plotting scripts so experiments always emit synchronized figures and summaries.
+- `optuna.hyperparameters` is now a list of declarative specs. Each entry describes a config `target` (dot/bracket path), a `type`, and optional `when` conditions. During a trial the optimizer samples each applicable spec, assigns the value directly to the target path (creating missing nodes automatically), and leaves untouched sections alone. Use `when` to scope parameters to certain classifiers or other choices, and `multiple: true` on categorical specs to sample combinations (encoded as strings internally).
 
 This layered design keeps each concern isolated—configuration drives construction, loaders normalize once, mixers focus on selection, and downstream modules reuse the same batch contract—making it easy to swap models, features, or dataset roots without code edits.
 
@@ -127,23 +64,28 @@ Malicious           6321     5732      290      109   0.0000   0.9561   0.9830  
 ```
 #### Testing example output
 ```bash
-[INFO] Plotting malware metrics (FPR, FNR, F1, Accuracy) over snapshots...
+[INFO] Output folder: /home/svobojan/pipeline_ml_training_for_SLIPS/experiments/lin_sequence_test_12/output/results/testing/1_test
+[INFO] Reading testing logfile: /home/svobojan/pipeline_ml_training_for_SLIPS/experiments/lin_sequence_test_12/output/logs/1_test_all_test.log
+[INFO] Plotting aggregated class counts (TP+FN per class so-far)...
+[INFO] Plotting main metrics (FPR, FNR, F1, Accuracy) over snapshots...
 [INFO] Saving FPR/FNR-only plot...
 [INFO] Plotting predicted vs seen counts (per-snapshot) for Malicious & Benign...
 [INFO] Plotting final confusion matrix (final snapshot)...
 
-=== Main final metrics (Aggregated so-far) ===
-Accuracy:             0.9040
-Malware F1:           0.9472
-Malware FPR:          0.2532
-Malware FNR:          0.0865
-Macro F1:             0.7089
-Precision:            0.9835
-Recall:               0.9135
+=== TESTING Multi-class (Aggregated) — 1_test ===
+Accuracy:             0.8695
+F1:                   0.9275
+FPR:                  0.4375
+FNR:                  0.1103
+Macro F1:             0.6374
+Precision:            0.9686
+Recall:               0.8897
+MCC:                  0.7389
 
-=== Per-class metrics (final snapshot) ===
-Class                 TP       TN       FP       FN     Prec      Rec       F1
-Malicious          59104     2929      993     5598   0.9835   0.9135   0.9472
+=== Per-class metrics (Aggregated) - TESTING ===
+Class                 TP       TN       FP       FN      Acc     Prec      Rec       F1
+Malicious         240242     9998     7776    29793   0.8695   0.9686   0.8897   0.9275
+Total test lines processed: 576
 ```
 
 ## Profiling the Pipeline
@@ -194,7 +136,6 @@ pre-commit run --all-files
 
 pip install detect-secrets # if not installed yet
 detect-secrets scan > .secrets.baseline
-```
 ```
 
 ## Extending the Pipeline
@@ -298,102 +239,19 @@ SLIPS (Stratosphere Linux IPS) is a behavioral machine-learning based intrusion 
 - All experiment outputs (including Optuna logs) are written under a unique experiment directory, with numeric suffixes to avoid overwriting.
 
 **Normal vs Optuna Mode:**
-- Running without `--optuna` uses the config as-is for a single experiment. With `--optuna`, the pipeline performs a hyperparameter search as described above.
+- Running without `--optuna` uses the config as-is for a single experiment. With `--optuna`, the pipeline performs a hyperparameter search as described below.
 
 ---
 
 
-## Optuna Integration: Hyperparameter Search Architecture
+## Optuna Integration (Overview)
 
-### Optuna Architecture Overview
+- Enable Optuna with `python run.py <config> --optuna`; the optimizer samples hyperparameters from the nested `optuna.hyperparameters` tree and spins up full train/validation trials.
+- Each study writes logs, configs, and metrics to `experiments/<experiment_name>/optuna/`, so you can inspect trial configs and pick the best performer later.
+- The provided `optuna_conf.yaml` includes a ready-to-run experiment and demonstrates how classifier/mixer comparisons are expressed; copy it as a starting point.
+- Full instructions—folder layout, normalized config example, rule set for conditional parameters, and troubleshooting tips—live in [docs/OPTUNA.md](docs/OPTUNA.md).
 
-The pipeline now supports automated hyperparameter optimization using Optuna. This enables multi-objective search for the best classifier and mixer parameters, maximizing F1 and minimizing malware FPR.
-
-#### Key Features
-- **Optuna mode**: Run with `--optuna` to enable hyperparameter search.
-- **Multi-objective**: Simultaneously maximize F1 and minimize malware FPR.
-- **Config-driven**: All search spaces and experiment settings are defined in the config file (see `optuna_conf.yaml`).
-- **Logging**: All trial configs and results are stored in `optuna/` under each experiment folder.
-- **Normal mode**: Running without `--optuna` executes the pipeline as before, with no changes to normal operation.
-
-#### Folder Structure
-- `experiments/<experiment_name>/optuna/`
-  - `optuna_trials.csv`: All trial parameters and results
-  - `optuna_summary.json`: Best results and study info
-  - `trial_{n}_config.yaml`: Config used for each trial
-  - `trial_{n}_result.json`: Partial/epoch results, final metrics
-
-#### How to Run
-
-**Normal mode:**
-```bash
-python run.py default_config.yaml
-```
-
-**Optuna mode:**
-```bash
-python run.py optuna_conf.yaml --optuna
-```
-This will run a multi-objective Optuna study, searching for the best combination of classifier, mixer, and other parameters as defined in the config.
-
-#### Example Optuna Config
-See `optuna_conf.yaml` for a full example. Key section:
-```yaml
-optuna:
-  enabled: true
-  n_trials: 20
-  metric: f1
-  directions: ["maximize", "minimize"]
-  hyperparameters:
-    ARFClassifier:
-      lambda_value:
-        type: int
-        low: 1
-        high: 20
-      n_models:
-        type: int
-        low: 5
-        high: 50
-    SGDClassifier:
-      alpha:
-        type: float
-        low: 0.0001
-        high: 0.1
-        log: true
-      loss:
-        type: categorical
-        choices: ["hinge", "log_loss"]
-    Mixer:
-      type:
-        type: categorical
-        choices: ["oversampling", "balanced", "random", "sequence"]
-      round_robin_cycles:
-        type: int
-        low: 8
-        high: 20
-      stash_size_per_label:
-        type: int
-        low: 500
-        high: 2000
-      buffer_size_per_label:
-        type: int
-        low: 1000
-        high: 3000
-      micro_batch:
-        type: int
-        low: 16
-        high: 64
-      datasets:
-        type: categorical
-        choices: ["010", "015", "011", "010", "001", "008"]
-```
-
-#### Notes
-- Each Optuna trial runs a full pipeline training+validation, so expect long runtimes.
-- All results are reproducible and logged for later inspection.
-- Test/validation data is unified for all trials; only training datasets may change.
-
----
+----
 
 **Jan Svoboda** **Stratosphere Lab**
 GitHub: [@jsvobo](https://github.com/jsvobo)
