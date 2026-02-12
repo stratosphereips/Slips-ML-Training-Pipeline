@@ -7,10 +7,11 @@
 #   - Defaults unlabeled flows to BENIGN.
 #   - Stores index in cache/ directory for large files (>50k valid flows) and reloads automatically.
 
-from .commons import BENIGN, MALICIOUS, BACKGROUND
+from commons import BENIGN, MALICIOUS, BACKGROUND
+from conn_normalizer import ConnToSlipsConverter
 import random
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 import pandas as pd
 import hashlib
 import json
@@ -36,6 +37,11 @@ class ZeekDataset:
         self.file_encoding = file_encoding
         self.file_errors = file_errors
         self.shuffle_per_epoch = shuffle_per_epoch
+        self.batch_size = batch_size
+        self.converter = ConnToSlipsConverter(default_label=str(BENIGN))
+
+        # Always initialize _dataframe to None
+        self._dataframe = None
 
         # cache dir
         if cache_dir is None:
@@ -57,14 +63,26 @@ class ZeekDataset:
             raise FileNotFoundError(f"Root path {self.root} does not exist")
 
         self.find_labeled_logfile()
-
         self._index_file()
+        # Always ensure DataFrame is loaded at init
+        self.as_dataframe()
 
-        self.indices: List[int] = []
-        self.batch_size: int = batch_size
-        self._batch_pos: int = 0
-        self.epoch: int = 0
-        self.reset_epoch(batch_size=batch_size)
+    def as_dataframe(self):
+        """Load the entire dataset into a pandas DataFrame, and cache it."""
+        if self._dataframe is not None:
+            return self._dataframe
+        records = list(self._iter_lines())
+        normalized = self._normalize_records(records)
+        self._dataframe = pd.DataFrame(normalized)
+        return self._dataframe
+
+    def _normalize_records(self, records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if not records:
+            return []
+        try:
+            return self.converter.normalize_batch(records)
+        except Exception:
+            return records
 
     def find_labeled_logfile(self) -> Path:
         for fname in self.labeled_filenames:
@@ -78,9 +96,6 @@ class ZeekDataset:
 
     def __len__(self):
         return self.total_lines
-
-    def batches(self):
-        return (self.total_lines + self.batch_size - 1) // self.batch_size
 
     def _cache_path(self):
         base = self.cache_dir
@@ -225,6 +240,8 @@ class ZeekDataset:
                     idx += 1
                     continue
                 parts = line.strip().split("\t")
+                if len(parts) < len(headers):
+                    parts.extend(["" for _ in range(len(headers) - len(parts))])
                 record = {
                     h: self._cast(
                         parts[i], types[i] if i < len(types) else None
@@ -257,138 +274,7 @@ class ZeekDataset:
             return float(value)
         return value
 
-    def get_line(self, idx: int):
-        for i, rec in enumerate(self._iter_lines()):
-            if i == idx:
-                return rec
-        raise IndexError("Line index out of range")
-
-    def get_lines(self, start: int, stop: int):
-        return [
-            rec
-            for i, rec in enumerate(self._iter_lines())
-            if start <= i < stop
-        ]
-
-    def reset_epoch(self, batch_size: int):
-        self.indices = list(range(self.total_lines))
-        if self.shuffle_per_epoch:
-            self.rng.shuffle(self.indices)
-        self.batch_size = batch_size
-        self._batch_pos = 0
-        self.epoch = 0
-
-    def next_batch(self):
-        # ensure index built
-        if not hasattr(self, "valid_indices") or self.total_lines == 0:
-            raise RuntimeError("Dataset empty or not indexed")
-
-        # If we've exhausted the epoch, signal exhaustion to callers
-        if self._batch_pos >= len(self.indices):
-            return None
-
-        # get the *relative* valid-flow indices for this batch (values 0..total_lines-1)
-        rel_inds = self.indices[self._batch_pos : self._batch_pos + self.batch_size]
-        # advance the pointer by how many we will return
-        self._batch_pos += len(rel_inds)
-
-        # if nothing requested or nothing left, signal exhaustion
-        if not rel_inds:
-            return None
-
-        # Map relative indices -> actual file data-line positions
-        target_positions = {self.valid_indices[r] for r in rel_inds}
-        # map position -> relative index label (for label lookup)
-        pos_to_label = {self.valid_indices[r]: self.labels[r] for r in rel_inds}
-
-        records = []
-        found = 0
-        with open(
-            self.current_file,
-            "r",
-            encoding=self.file_encoding,
-            errors=self.file_errors,
-        ) as fh:
-            file_idx = 0  # counts data lines (non-# lines)
-            for line in fh:
-                if line.startswith("#"):
-                    continue
-                if file_idx in target_positions:
-                    parts = line.strip().split("\t")
-                    record = {
-                        h: self._cast(
-                            parts[i], self.types[i] if i < len(self.types) else None
-                        )
-                        for i, h in enumerate(self.headers)
-                    }
-                    record["label"] = pos_to_label.get(file_idx, str(BENIGN))
-                    records.append(record)
-                    found += 1
-                    if found == len(target_positions):
-                        break
-                file_idx += 1
-
-        if found != len(target_positions):
-            print(f"Warning: expected {len(target_positions)} records in batch but found {found}")
-
-        return records
-
-
-    def next_n(self, n: int):
-        if not hasattr(self, "valid_indices") or self.total_lines == 0:
-            raise RuntimeError("Dataset empty or not indexed")
-
-        if n <= 0:
-            return []
-
-        # If we've exhausted this epoch, signal exhaustion
-        if self._batch_pos >= len(self.indices):
-            return None
-
-        # compute relative indices for up to n samples (cap at epoch end)
-        end_pos = min(len(self.indices), self._batch_pos + n)
-        rel_inds = self.indices[self._batch_pos : end_pos]
-        self._batch_pos += len(rel_inds)
-
-        if not rel_inds:
-            return None
-
-        target_positions = {self.valid_indices[r] for r in rel_inds}
-        pos_to_label = {self.valid_indices[r]: self.labels[r] for r in rel_inds}
-
-        records = []
-        found = 0
-        with open(
-            self.current_file,
-            "r",
-            encoding=self.file_encoding,
-            errors=self.file_errors,
-        ) as fh:
-            file_idx = 0  # counts data lines (non-# lines)
-            for line in fh:
-                if line.startswith("#"):
-                    continue
-                if file_idx in target_positions:
-                    parts = line.strip().split("\t")
-                    record = {
-                        h: self._cast(
-                            parts[i],
-                            self.types[i] if i < len(self.types) else None,
-                        )
-                        for i, h in enumerate(self.headers)
-                    }
-                    record["label"] = pos_to_label.get(file_idx, str(BENIGN))
-                    records.append(record)
-                    found += 1
-                    if found == len(target_positions):
-                        break
-                file_idx += 1
-
-        if found != len(target_positions):
-            print(f"Warning: expected {len(target_positions)} records but found {found}")
-
-        return records
-
+    # Batching and line access methods removed: batching is now handled by mixers only
 
 
 # -------------------
@@ -445,18 +331,3 @@ def find_and_load_datasets(
         loaders[entry.name] = ds
 
     return loaders
-
-
-def sample_n_from_each_dataset(
-    loaders: Dict[str, ZeekDataset], n: int = 5
-) -> Dict[str, dict]:
-    results: Dict[str, dict] = {}
-    for name, ds in loaders.items():
-        ds.reset_epoch(batch_size=n)
-        batch = ds.next_batch()
-        results[name] = {
-            "file": str(ds.current_file),
-            "samples": batch,
-            "df": pd.DataFrame(batch),
-        }
-    return results

@@ -62,33 +62,35 @@ The configuration controls dataset roots, preprocessing steps, model spec, mixer
 
 ---
 
+## Architecture
+
+The pipeline is assembled end-to-end at runtime from the YAML config:
+
+1. **Config ingestion** – `ConfigReader` parses the experiment file, resolves effective paths, computes batch/validation sizes, and exposes typed accessors used everywhere else.
+2. **Build phase** – `BuildManager` uses the config to instantiate the major subsystems in order: dataset loaders (via `find_and_load_datasets`), feature extractor, preprocessing stack, and classifier wrapper. Each subsystem only touches the configuration slice it needs.
+3. **Dataset layer** – `ZeekDataset` eagerly loads every Zeek conn log, indexes metadata, and normalizes all flows to the canonical SLIPS schema through `ConnToSlipsConverter`. Loaders therefore expose a single `as_dataframe()` view that mixers can consume without re-running conversions.
+4. **Mixing layer** – Mixers in `data_selectors.py` take the full DataFrames, optionally shuffle them per epoch, and emit train/validation splits following the selected strategy (sequence, random, balanced, oversampling). Because they operate on cached tables, batching decisions are deterministic and memory-friendly.
+5. **Feature + preprocessing stage** – For each emitted batch, `FeatureExtraction` cleans, engineers, and reorders numerical features while returning aligned labels. The batch then flows through the configured `PreprocessingWrapper`, which chains sklearn-compatible transformers (e.g., scalers, PCA) and persists their fitted state per experiment.
+6. **Model stage** – `ClassifierWrapper` (Sklearn or River) abstracts the underlying estimator’s `partial_fit`, `predict`, and persistence routines, handles missing-class bootstrapping, and stores artifacts under the experiment directory.
+7. **Execution + logging** – `CommandExecutor` loops over `train`/`test` commands, drives mixers until exhaustion, logs metrics through `Logger`, and triggers plotting scripts so experiments always emit synchronized figures and summaries.
+
+This layered design keeps each concern isolated—configuration drives construction, loaders normalize once, mixers focus on selection, and downstream modules reuse the same batch contract—making it easy to swap models, features, or dataset roots without code edits.
+
+---
+
 ## Parts of the pipeline
 
 Key modules:
 
 * `src/dataset_wrapper.py` — Zeek dataset discovery + indexed loader
 * `src/conn_normalizer.py` — Zeek → SLIPS normalization
-* `src/features.py` — feature extraction (batch & single item)
-* `src/preprocessing_wrapper.py` — sequence of transformers with save/load
+* `src/features.py` — feature extraction (whole df)
+* `src/preprocessing_wrapper.py` — sequence of transforms with save/load
 * `src/classifier_wrapper.py` — unified interface for classifiers
 * `src/data_selectors.py` — mixers / batch composition
 * `src/conf_reader.py` — config loading & validation
-* `src/plot_utils/` — plotting helpers used by the pipeline
+* `src/plot_utils/` — plotting helpers used by the pipeline, specifically the plotting scripts.
 * `src/metrics_calculator.py` — unified metrics calculation for pipeline and plotting scripts
-
-### MetricsCalculator
-The `MetricsCalculator` class provides a unified interface for computing metrics such as confusion matrix, F1, FPR, precision, recall, and more. It is used throughout the pipeline and plotting scripts to ensure consistent metric calculation and reporting.
-
-**Features:**
-- Computes per-class and aggregate metrics for binary and multi-class classification
-- Used in training, validation, and testing phases
-- Provides metrics for plotting scripts (e.g., `plot_train_perf.py`, `plot_test_perf.py`)
-- Ensures reproducibility and consistency of reported metrics
-
-**Usage in the pipeline:**
-- During training and validation, `MetricsCalculator` is used to compute metrics from predictions and ground truth labels
-- In plotting scripts, it aggregates metrics for visualization and reporting
-- All main metrics (F1, FPR, FNR, accuracy, precision, recall, MCC) are calculated using this class
 
 ---
 ## Output
@@ -96,32 +98,32 @@ The `MetricsCalculator` class provides a unified interface for computing metrics
 #### Training example output
 ```bash
 === VALIDATION Multi-class (Aggregated) ===
-Accuracy:             0.9838
-Malware F1:           0.9882
-Malware FPR:          0.0345
-Malware FNR:          0.0079
-Macro F1:             0.9811
-Precision:            0.9843
-Recall:               0.9921
-MCC:                  0.9622
+Accuracy:             0.9638
+F1:                   0.9651
+FPR:                  0.0629
+FNR:                  0.0100
+Macro F1:             0.9638
+Precision:            0.9414
+Recall:               0.9900
+MCC:                  0.0000
 
 === TRAINING Multi-class (Aggregated) ===
-Accuracy:             0.9758
-Malware F1:           0.9828
-Malware FPR:          0.0524
-Malware FNR:          0.0121
-Macro F1:             0.9710
-Precision:            0.9776
-Recall:               0.9879
-MCC:                  0.9422
+Accuracy:             0.9680
+F1:                   0.9694
+FPR:                  0.0482
+FNR:                  0.0170
+Macro F1:             0.9679
+Precision:            0.9561
+Recall:               0.9830
+MCC:                  0.0000
 
 === Per-class metrics (Aggregated) - VALIDATION ===
 Class                 TP       TN       FP       FN      Acc     Prec      Rec       F1
-Malicious            754      336       12        6   0.9838   0.9843   0.9921   0.9882
+Malicious            691      641       43        7   0.0000   0.9414   0.9900   0.9651
 
 === Per-class metrics (Aggregated) - TRAINING ===
 Class                 TP       TN       FP       FN      Acc     Prec      Rec       F1
-Malicious           6866     2842      157       84   0.9758   0.9776   0.9879   0.9828
+Malicious           6321     5732      290      109   0.0000   0.9561   0.9830   0.9694
 ```
 #### Testing example output
 ```bash
@@ -187,8 +189,12 @@ pytest
 - For the PR to be merged, we need all tests to be passing and pre-commit working without errors.
 - Pre-commit runs linters and some checks based on the config. Here we use it to keep some code quality. If you want to contribute,
 ```bash
-pre-commit install
+pre-commit install # if not installed yet
 pre-commit run --all-files
+
+pip install detect-secrets # if not installed yet
+detect-secrets scan > .secrets.baseline
+```
 ```
 
 ## Extending the Pipeline
@@ -219,13 +225,13 @@ preprocessor.add_step("scaler", StandardScaler())
 ### Add a custom dataset loader
 
 * `src.dataset_wrapper.find_and_load_datasets` returns a mapping of dataset_key -> loader.
-* Your loader must support at least: `reset_epoch(batch_size)`, `next_batch()` and optionally `next_n(n)` to work with built-in mixers.
+* Your loader must expose a single `as_dataframe()` method that returns the entire dataset as a pandas DataFrame. The built-in mixers perform all batching and shuffling on top of these full DataFrames.
 * Register/load your loader by replacing or extending `find_and_load_datasets` to return your loader instances keyed by dataset folder name.
 
 
 ### Add or modify mixers
 
-* Mixers live in `src/data_selectors` and must follow the `DefaultMixer` contract (`reset_epoch`, `next_batch`).
+* Mixers live in `src/data_selectors` and must follow the `DefaultMixer` contract (`reset_epoch`, `next_batch`). Each mixer pulls full DataFrames from loaders via `as_dataframe()` and is responsible for producing batches for downstream consumers.
 * Update `src.class_factory.get_mixer_class` or reference a mixer by dotted path from the config to use a custom mixer.
 
 ---
