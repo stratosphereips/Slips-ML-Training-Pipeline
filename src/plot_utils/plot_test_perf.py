@@ -1,180 +1,24 @@
 #!/usr/bin/env python3
 import argparse
 import os
-import traceback
+import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
 
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 from base_utils import (
-    compute_binary_metrics,
-    compute_multi_metrics,
+    MALWARE_PLOT_METRICS,
     ensure_dir,
-    parse_testing_log_line,
+    extract_metrics_for_plot,
     plot_major_metrics_together,
 )
-
-
-def read_all_tests(logfile):
-    entries = []
-    print(f"[INFO] Reading testing logfile: {logfile}")
-    with open(logfile, "r") as f:
-        for i, line in enumerate(f):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                data = parse_testing_log_line(line)
-                if data is None:
-                    print(
-                        f"[WARN] Skipping unparsable testing line {i}: {line[:200]}"
-                    )
-                    continue
-                # strip background if exists
-                if "per_class" in data:
-                    data["per_class"] = {
-                        k: v
-                        for k, v in data["per_class"].items()
-                        if k.lower() not in ("background", "bg")
-                    }
-                entries.append(data)
-            except Exception:
-                print(
-                    f"[WARN] Skipping line due to parsing error: {line[:200]}"
-                )
-                traceback.print_exc()
-                continue
-    # print(f"[INFO] Parsed {len(entries)} testing lines")
-    return entries
-
-
-def accumulate_test_metrics_cumulative_snapshots(entries):
-    if not entries:
-        return [], [], [], [], []
-
-    class_names = list(entries[0].get("per_class", {}).keys())
-    if not class_names:
-        class_names = ["Malicious", "Benign"]
-
-    cumul_per_class_series = []
-    cumul_multi_series = []
-    cumul_binary_series = []
-    cumul_class_counts_series = []
-    cumulative_total_flows = []
-
-    for data in entries:
-        pcm = data.get("per_class", {})
-
-        per_class_metrics_now = {}
-        for cls in class_names:
-            counts = {
-                k: int(pcm.get(cls, {}).get(k, 0))
-                for k in ("TP", "FP", "TN", "FN")
-            }
-            bin_metrics = compute_binary_metrics(counts)
-            bin_metrics.update(counts)
-            per_class_metrics_now[cls] = bin_metrics
-        cumul_per_class_series.append(per_class_metrics_now)
-
-        snapshot_counts = {
-            cls: {
-                k: int(pcm.get(cls, {}).get(k, 0))
-                for k in ("TP", "FP", "TN", "FN")
-            }
-            for cls in class_names
-        }
-        multi_now = compute_multi_metrics(snapshot_counts)
-        # malware specific
-        mal_key = next(
-            (
-                k
-                for k in snapshot_counts
-                if k.lower() in ("malware", "malicious")
-            ),
-            None,
-        )
-        if mal_key:
-            mcounts = snapshot_counts[mal_key]
-            # Reuse binary metrics!
-            mal_binary = compute_binary_metrics(mcounts)
-            multi_now["malware_fpr"] = mal_binary["FPR"]
-            multi_now["malware_fnr"] = mal_binary["FNR"]
-            multi_now["malware_f1"] = mal_binary["f1"]
-        else:
-            multi_now["malware_fpr"] = 0.0
-            multi_now["malware_fnr"] = 0.0
-            multi_now["malware_f1"] = 0.0
-
-        # malware specific
-        mal_key = next(
-            (
-                k
-                for k in snapshot_counts
-                if k.lower() in ("malware", "malicious")
-            ),
-            None,
-        )
-        if mal_key:
-            mcounts = snapshot_counts[mal_key]
-            tp = mcounts.get("TP", 0)
-            fp = mcounts.get("FP", 0)
-            tn = mcounts.get("TN", 0)
-            fn = mcounts.get("FN", 0)
-            multi_now["malware_fpr"] = (
-                (fp / (fp + tn)) if (fp + tn) > 0 else 0.0
-            )
-            multi_now["malware_fnr"] = (
-                (fn / (fn + tp)) if (fn + tp) > 0 else 0.0
-            )
-            prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-            rec = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-            multi_now["malware_f1"] = (
-                (2 * prec * rec / (prec + rec)) if (prec + rec) > 0 else 0.0
-            )
-        else:
-            multi_now["malware_fpr"] = 0.0
-            multi_now["malware_fnr"] = 0.0
-            multi_now["malware_f1"] = 0.0
-
-        cumul_multi_series.append(multi_now)
-
-        # binary summary
-        if "binary_summary" in data:
-            bm = data["binary_summary"]
-            bm_counts = {
-                k: int(bm.get(k, 0)) for k in ("TP", "FP", "TN", "FN")
-            }
-        else:
-            mal = pcm.get("Malicious", {})
-            tp = int(mal.get("TP", 0))
-            fp = int(mal.get("FP", 0))
-            fn = int(mal.get("FN", 0))
-            tn = 0
-            for k in pcm.keys():
-                if k.lower() not in ("malware", "malicious"):
-                    tn += int(pcm[k].get("TN", 0))
-            bm_counts = {"TP": tp, "FP": fp, "TN": tn, "FN": fn}
-        cumul_binary_series.append(compute_binary_metrics(bm_counts))
-
-        # class counts TP + FN
-        counts_dict = {
-            cls: int(
-                pcm.get(cls, {}).get("TP", 0) + pcm.get(cls, {}).get("FN", 0)
-            )
-            for cls in class_names
-        }
-        cumul_class_counts_series.append(counts_dict)
-
-        total = int(data.get("total_flows", 0))
-        cumulative_total_flows.append(total)
-
-    return (
-        cumul_per_class_series,
-        cumul_multi_series,
-        cumul_binary_series,
-        cumul_class_counts_series,
-        cumulative_total_flows,
-    )
+from metrics_calculator import (
+    accumulate_testing_metrics,
+    build_testing_summary,
+    read_testing_snapshots,
+)
 
 
 def _choose_sparse_xticks(batch_count, labels):
@@ -320,7 +164,7 @@ def main():
     testing_dir = ensure_dir(os.path.join(base_dir, "testing", args.exp))
     print(f"[INFO] Output folder: {testing_dir}")
 
-    entries = read_all_tests(file_path)
+    entries = read_testing_snapshots(file_path)
     if not entries:
         print("[ERROR] No testing entries parsed; exiting.")
         return
@@ -328,10 +172,10 @@ def main():
     (
         cumul_per_class_series,
         cumul_multi_series,
-        cumul_binary_series,
+        _,
         cumul_class_counts_series,
         cumulative_total_flows,
-    ) = accumulate_test_metrics_cumulative_snapshots(entries)
+    ) = accumulate_testing_metrics(entries)
     n = len(cumul_multi_series)
     # print(f"[INFO] Building plots for {n} snapshots")
 
@@ -357,10 +201,8 @@ def main():
 
     # malware metrics
     print(
-        "[INFO] Plotting malware metrics (FPR, FNR, F1, Accuracy) over snapshots..."
+        "[INFO] Plotting main metrics (FPR, FNR, F1, Accuracy) over snapshots..."
     )
-    from base_utils import MALWARE_PLOT_METRICS, extract_metrics_for_plot
-
     malware_metrics_data = [
         extract_metrics_for_plot(m, MALWARE_PLOT_METRICS)
         for m in cumul_multi_series
@@ -384,7 +226,7 @@ def main():
     # FPR/FNR only
     print("[INFO] Saving FPR/FNR-only plot...")
     fpr_fnr_series = [
-        {"FPR": m.get("malware_fpr", 0), "FNR": m.get("malware_fnr", 0)}
+        {"FPR": m.get("fpr", 0), "FNR": m.get("fnr", 0)}
         for m in cumul_multi_series
     ]
     out_fprfnr = os.path.join(testing_dir, "malicious_fpr_fnr_over_time.png")
@@ -429,47 +271,10 @@ def main():
     out_cm = os.path.join(testing_dir, "confusion_matrix_final.png")
     plot_confusion_matrix_from_final(final_per_class, out_cm)
 
-    # summary
-    last_multi = cumul_multi_series[-1]
-    last_binary = cumul_binary_series[-1]
-    final_per_class_table = cumul_per_class_series[-1]
-
-    # print("[INFO] Writing summary...")
-    lines = []
-    lines.append("\n=== Main final metrics (Aggregated so-far) ===")
-    lines.append(
-        f"Accuracy:                         {last_multi.get('accuracy', 0):.4f}"
+    summary_text = build_testing_summary(
+        args.exp, cumul_multi_series, cumul_per_class_series
     )
-    lines.append(
-        f"F1:                               {last_multi.get('malware_f1', 0):.4f}"
-    )
-    lines.append(
-        f"FPR:                              {last_multi.get('malware_fpr', 0):.4f}"
-    )
-    lines.append(
-        f"FNR:                              {last_multi.get('malware_fnr', 0):.4f}"
-    )
-    lines.append(
-        f"Macro F1:                         {last_multi.get('macro_f1', 0):.4f}"
-    )
-    lines.append(
-        f"Precision:                        {last_binary.get('precision', 0):.4f}"
-    )
-    lines.append(f"Recall:                  {last_binary.get('recall', 0):.4f}")
-
-    lines.append("\n=== Per-class metrics (final snapshot) ===")
-    lines.append(
-        f"{'Class':<15} {'TP':>8} {'TN':>8} {'FP':>8} {'FN':>8} {'Prec':>8} {'Rec':>8} {'F1':>8} "
-    )
-    m = final_per_class_table['Malicious']
-    lines.append(
-        f"{'Malicious':<15} {m.get('TP', 0):8d} {m.get('TN', 0):8d} {m.get('FP', 0):8d} {m.get('FN', 0):8d} {m.get('precision', 0.0):8.4f} {m.get('recall', 0.0):8.4f} {m.get('f1', 0.0):8.4f}"
-    )
-
-    lines.append(f"\nSummary for Experiment {args.exp}:")
-    lines.append(f"Total test lines processed: {len(entries)}")
-
-    summary_text = "\n".join(lines)
+    summary_text += f"\nTotal test lines processed: {len(entries)}"
     summary_path = os.path.join(testing_dir, "summary.txt")
     with open(summary_path, "w") as f:
         f.write(summary_text)
