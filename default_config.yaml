@@ -1,8 +1,8 @@
-experiment_name: oversampling
+experiment_name: lin_sequence_test
 
 # root of the dataset folder
 # should contain subfolders with ID in the names (e.g., 001, 002, ...)
-root: /opt/Datasets/security-datasets-for-testing/
+root:
 seed: 1111
 validation_split: 0.1
 batch_size_train: 500
@@ -54,53 +54,81 @@ preprocessing:
   save_steps: true
   step_filename_template: "{name}.bin"
 
-model:
-  wrapper: RiverClassifierWrapper
-  classifier_type: ADWINBoostingClassifier
-  classifier_params:
-    n_models: 5
-    model:
-      type: HoeffdingAdaptiveTreeClassifier
-      params:
-        max_depth: 15
-        grace_period: 300
-        max_size: 10
-        delta: 1.0e-7
-  save_name: classifier_adwinboost.bin
+  # model:
+  #   wrapper: RiverClassifierWrapper
+  #   classifier_type: ADWINBoostingClassifier
+  #   classifier_params:
+  #     n_models: 5
+  #     model:
+  #       type: HoeffdingAdaptiveTreeClassifier
+  #       params:
+  #         max_depth: 15
+  #         grace_period: 300
+  #         max_size: 10
+  #         delta: 1.0e-7
+  #   save_name: classifier_adwinboost.bin
 
+model:
+  wrapper: SklearnClassifierWrapper
+  classifier_type: SGDClassifier
+  classifier_params:
+    loss: "hinge"
+    class_weight:
+      "Benign": 2
+      "Malicious": 1
+    alpha: 0.05
+
+# model:
+#   wrapper: RiverClassifierWrapper
+#   classifier_type: ARFClassifier
+#   classifier_params:
+#     lambda_value: 10
+#     n_models: 10
 
 commands:
-  - name: "train_seq" # command name
+#  - name: "train_seq" # command name
+#    command: "train" # train/test
+#    mixer: #types: oversampling, balanced, random, sequence
+#      type: sequence
+#      datasets: ["010","015","011","010"]
+
+  # - name: "train_balanced" # command name
+  #   command: "train" # train/test
+  #   mixer: #types: oversampling, balanced, random, sequence
+  #     type: balanced
+  #     # Label configuration
+  #     labels: ["Benign", "Malicious"]
+
+  #     # Balance specification (fractions must sum to 1.0)
+  #     balance:
+  #       Benign: 0.5
+  #       Malicious: 0.5
+  #     datasets: ["010","015","011","010"]
+
+  - name: "sequential_train_fast" # command name
     command: "train" # train/test
     mixer:
-      type: "oversampling"
-
-      # Label configuration
+      type: "sequence"
+       # Label configuration
       labels: ["Benign", "Malicious"]
 
-      # Balance specification (fractions must sum to 1.0)
+       # Balance specification (fractions must sum to 1.0)
       balance:
-        Benign: 0.9
-        Malicious: 0.1
+        Benign: 0.5
+        Malicious: 0.5
 
       # Alternative balance formats (uncomment to use):
       # balance: [0.9, 0.1]  # List format (maps to labels in order)
       # balance: null  # Equal fractions for all labels
 
-      # Round-robin configuration
-      round_robin_cycles: 12  # Default: 8, higher = more fresh data attempts
 
-      # Memory management
+#     # Memory management
       stash_size_per_label: 800  # Default: 500,  samples for diversity
       buffer_size_per_label: 1500  # Default: 1000, unused samples queue
 
-      # Pull configuration
-      micro_batch: 32  # Default: 16, chunk size when pulling from loaders
-      # Datasets to mix
-      datasets: ["001", "008", "009", "010", "011", "012",
-                 "013", "014", "015", "016", "017", "022",
-                 "023", "024", "027", "028", "029", "032",
-                 "033", "034"]
+#     # Pull configuration
+#     # Datasets to mix
+      datasets: ["010", "011"]
 
 
   - name: "test_all"
