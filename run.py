@@ -6,6 +6,7 @@ import traceback
 import yaml
 import json
 import argparse
+from datetime import datetime
 
 # Insert src/ at front of sys.path so modules inside it can use relative imports
 SRC = Path(__file__).resolve().parent / "src"
@@ -17,6 +18,28 @@ from pipeline import PipelineRunner  # imports src/pipeline.py as module 'pipeli
 
 from conf_reader import ConfigReader
 from optuna_optimizer import OptunaOptimizer
+
+
+def _log_optuna_message(log_dir: Path, message: str):
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "optuna_trials.log"
+    with open(log_path, "a") as log_file:
+        log_file.write(f"[{datetime.now().isoformat(timespec='seconds')}] {message}\n")
+
+
+def _has_tunable_params(search_space) -> bool:
+    def _spec_has_params(spec):
+        if not isinstance(spec, dict):
+            return False
+        if spec.get("choices"):
+            return True
+        if "type" in spec:
+            return True
+        return any(_spec_has_params(sub) for sub in spec.values() if isinstance(sub, dict))
+
+    if not isinstance(search_space, dict):
+        return False
+    return any(_spec_has_params(spec) for spec in search_space.values())
 
 
 def main(config_path: str = "./default_config.yaml", optuna_mode: bool = False):
@@ -69,6 +92,20 @@ def main(config_path: str = "./default_config.yaml", optuna_mode: bool = False):
         cfg_reader = ConfigReader(config_path)
         optuna_cfg = cfg_reader.get_optuna_config()
         search_space = optuna_cfg["hyperparameters"]
+        optuna_section_present = "optuna" in base_config
+        search_space_populated = _has_tunable_params(search_space)
+        if not optuna_section_present or not search_space_populated:
+            if not optuna_section_present:
+                reason = (
+                    "[Optuna] Configuration does not define an 'optuna' section; cannot run hyperparameter search."
+                )
+            else:
+                reason = (
+                    "[Optuna] No tunable parameters were found in the optuna.hyperparameters section; nothing to optimize."
+                )
+            print(reason)
+            _log_optuna_message(optuna_dir, reason)
+            return 1
         metric_raw = optuna_cfg.get("metric", ["f1", "malware_fpr"])
         if isinstance(metric_raw, str):
             if metric_raw.startswith("(") and metric_raw.endswith(")"):
