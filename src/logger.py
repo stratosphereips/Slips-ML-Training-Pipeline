@@ -146,6 +146,7 @@ class Logger:
                 f"Training predicted labels: {pred_train}, "
                 f"Training metrics: {metrics_train}"
             )
+            return {"train": metrics_train, "val": metrics_val}
 
         # train only
         else:
@@ -163,6 +164,7 @@ class Logger:
                 f"Training predicted labels: {pred}, "
                 f"Training metrics: {metrics}"
             )
+            return {"train": metrics}
 
     # -------------------------
     # test logging
@@ -220,3 +222,4 @@ class Logger:
             f"Predicted labels: {self.predicted_labels}; "
             f"Malware metrics (TP/FP/TN/FN): {self.malware_metrics}"
         )
+        return dict(self.malware_metrics)
