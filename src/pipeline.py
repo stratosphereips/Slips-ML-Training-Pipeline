@@ -1,4 +1,3 @@
-
 import sys
 import subprocess
 from pathlib import Path
@@ -10,6 +9,7 @@ try:
     from src.conf_reader import ConfigReader
 except Exception:
     from conf_reader import ConfigReader  # type: ignore
+
 
 try:
     from src.class_factory import (
@@ -27,7 +27,6 @@ except Exception:
         get_mixer_class,
         prepare_river_nested_model_params,
     )
-
 try:
     from src.dataset_wrapper import find_and_load_datasets
 except Exception:
@@ -47,6 +46,11 @@ try:
     from src.logger import Logger
 except Exception:
     from logger import Logger
+
+try:
+    from src.metrics_calculator import compute_binary_metrics
+except Exception:
+    from metrics_calculator import compute_binary_metrics
 
 # -------------------------
 # Experiment & Paths
@@ -268,7 +272,7 @@ class CommandExecutor:
         mixer_spec["effective_batch_size"] = int(cmd.get("effective_batch_size"))
         return mixer_spec
 
-    def _run_train(self, idx, cmd):
+    def _run_train(self, idx, cmd, val_metrics=None):
         readme_path = self.exp.readme_path
         with open(readme_path, "a", encoding="utf-8") as readme_file:
             readme_file.write(f"Running training command {cmd['name']}\n")
@@ -310,13 +314,18 @@ class CommandExecutor:
                     y_val = np.asarray(y_val_tmp)
 
 
-            logger.save_training_results(
+            batch_metrics = logger.save_training_results(
                 y_pred_train=y_pred_train,
                 y_gt_train=np.asarray(y_train),
                 y_pred_val=y_pred_val,
                 y_gt_val=y_val,
                 sum_labeled_flows=len(y_train),
             )
+            if val_metrics is not None and batch_metrics:
+                metrics_val = batch_metrics.get("val")
+                if metrics_val:
+                    for key in ("TP", "FP", "FN", "TN"):
+                        val_metrics[key] += int(metrics_val.get(key, 0))
 
         self.preprocessor.save(base_path=str(cmd["paths"]["preprocessing"]))
         self.classifier_wrapper.save_classifier(
@@ -328,7 +337,7 @@ class CommandExecutor:
             readme_file.write(f"Successfully ending training command {cmd['name']}\n")
 
 
-    def _run_test(self, idx, cmd):
+    def _run_test(self, idx, cmd, test_metrics=None):
         readme_path = self.exp.readme_path
         with open(readme_path, "a", encoding="utf-8") as readme_file:
             readme_file.write(f"Starting testing command {cmd['name']}\n")
@@ -339,6 +348,7 @@ class CommandExecutor:
         logfile = Path(cmd["paths"]["logs"]) / f"{idx}_{cmd['name']}_test.log"
         logger = Logger(logfile_path=str(logfile), overwrite=True)
 
+        last_batch_metrics = None
         while True:
             batch, _ = mixer.next_batch()
             if batch is None:
@@ -351,13 +361,17 @@ class CommandExecutor:
             Xp = self.preprocessor.transform(X)
             y_pred = self.classifier_wrapper.predict(Xp)
 
-            logger.save_test_results(np.asarray(y), np.asarray(y_pred))
+            last_batch_metrics = logger.save_test_results(np.asarray(y), np.asarray(y_pred))
 
         self.preprocessor.save(base_path=str(cmd["paths"]["preprocessing"]))
         self.classifier_wrapper.save_classifier(
             path=str(cmd["paths"]["model"]),
             name=self.cfg_reader.get_model_spec().get("save_name", "classifier.bin"),
         )
+
+        if test_metrics is not None and last_batch_metrics:
+            for key in ("TP", "FP", "FN", "TN"):
+                test_metrics[key] = int(last_batch_metrics.get(key, 0))
 
 
     def _run_command(self, idx, cmd):
@@ -433,12 +447,19 @@ class PipelineRunner:
         return True
 
     def run_optuna_trial(self, optuna_trial=None, optuna_dir=None):
-        # Only run the first train command, skip test commands
         commands = self.cfg_reader.get_commands()
         train_cmds = [c for c in commands if c.get("command") == "train"]
         if not train_cmds:
             raise RuntimeError("No train command found for Optuna trial.")
-        cmd = train_cmds[0]
+        metrics = {
+            "f1": 0.0,
+            "fpr": 1.0,
+            "train_f1": 0.0,
+            "train_fpr": 1.0,
+            "test_f1": 0.0,
+            "test_fpr": 1.0,
+        }
+        train_cmd = train_cmds[0]
         self.exp.prepare_dirs()
         self.exp.validate_plotting_scripts()
         bm = BuildManager(self.cfg_reader, self.exp)
@@ -451,50 +472,52 @@ class PipelineRunner:
             self.preprocessor,
             self.classifier_wrapper,
         )
-        idx = 0
-        executor._ensure_command_paths(cmd, idx)
-        executor._run_train(idx, cmd)
-        log_file = self.exp.logs_dir / f"{idx}_{cmd['name']}_train.log"
-        f1, fpr = self._extract_metrics_from_log(log_file)
-        # Save model and scaler for this trial if optuna_dir is provided
+
+        train_idx = commands.index(train_cmd)
+        executor._ensure_command_paths(train_cmd, train_idx)
+        val_counts = {"TP": 0, "FP": 0, "FN": 0, "TN": 0}
+        executor._run_train(train_idx, train_cmd, val_metrics=val_counts)
+        train_total = sum(val_counts.values())
+        if train_total == 0:
+            train_f1 = 0.0
+            train_fpr = 1.0
+        else:
+            train_metrics = compute_binary_metrics(val_counts)
+            train_f1 = train_metrics.get("f1", 0.0)
+            train_fpr = train_metrics.get("fpr", 0.0)
+        metrics.update({
+            "f1": train_f1,
+            "fpr": train_fpr,
+            "train_f1": train_f1,
+            "train_fpr": train_fpr,
+        })
+
+        test_counts = None
+        test_cmds = [c for c in commands if c.get("command") == "test"]
+        if test_cmds:
+            test_cmd = test_cmds[0]
+            test_idx = commands.index(test_cmd)
+            executor._ensure_command_paths(test_cmd, test_idx)
+            test_counts = {"TP": 0, "FP": 0, "FN": 0, "TN": 0}
+            executor._run_test(test_idx, test_cmd, test_metrics=test_counts)
+
+        if test_counts is not None:
+            test_total = sum(test_counts.values())
+            if test_total == 0:
+                test_f1 = 0.0
+                test_fpr = 1.0
+            else:
+                test_metrics_bin = compute_binary_metrics(test_counts)
+                test_f1 = test_metrics_bin.get("f1", 0.0)
+                test_fpr = test_metrics_bin.get("fpr", 0.0)
+            metrics.update({"test_f1": test_f1, "test_fpr": test_fpr})
+
         if optuna_dir is not None and optuna_trial is not None:
             trial_dir = Path(optuna_dir) / f"trial_{optuna_trial.number}"
             trial_dir.mkdir(parents=True, exist_ok=True)
-            # Save config, context, result, model, scaler
-            # Model
             self.classifier_wrapper.save_classifier(path=str(trial_dir), name="model.bin")
-            # Scaler
             self.preprocessor.save(base_path=str(trial_dir))
-        return {"f1": f1, "fpr": fpr}
-
-    def _extract_metrics_from_log(self, log_file):
-        # Parse the log file for final F1 and malware FPR
-        # This is a placeholder: you may want to parse the last line or compute from metrics
-        f1 = 0.0
-        fpr = 1.0
-        try:
-            with open(log_file, "r") as f:
-                lines = f.readlines()
-            for line in reversed(lines):
-                if "Validation metrics" in line:
-                    # Example: ... Validation metrics: {'TP': 10, 'FP': 2, ...}
-                    import re
-                    import ast
-                    m = re.search(r"Validation metrics: (\{.*?\})", line)
-                    if m:
-                        metrics = ast.literal_eval(m.group(1))
-                        tp = metrics.get("TP", 0)
-                        fp = metrics.get("FP", 0)
-                        fn = metrics.get("FN", 0)
-                        tn = metrics.get("TN", 0)
-                        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-                        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-                        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
-                        fpr = fp / (fp + tn) if (fp + tn) > 0 else 1.0
-                        break
-        except Exception:
-            pass
-        return f1, fpr
+        return metrics
 
 # -------------------------
 # CLI
