@@ -18,6 +18,16 @@ class ClassifierWrapper:
         self.fill_dummy()
         self.preprocessing_handler = preprocessing_handler
         assert len(self.classes) >= 2, "At least two classes must be specified"
+        self._build_label_encoders()
+
+    def _build_label_encoders(self):
+        self.label_encoding = {}
+        self.inverse_label_encoding = {}
+        for idx, cls in enumerate(self.classes):
+            # River classifiers often expect floats
+            encoded = float(idx)
+            self.label_encoding[cls] = encoded
+            self.inverse_label_encoding[encoded] = cls
 
     def fill_dummy(self):
         # these dummy flows are taken from slips itself
@@ -73,6 +83,16 @@ class ClassifierWrapper:
         self.dummy_flows[BENIGN] = (dummy_benign_flow, BENIGN)
         self.dummy_flows[MALICIOUS] = (dummy_malicious_flow, MALICIOUS)
         self.dummy_flows["default"] = (dummy_default_flow, "default")
+
+    def _encode_labels(self, labels):
+        if not hasattr(self, "label_encoding"):
+            return labels
+        return numpy.array([self.label_encoding.get(label, label) for label in labels])
+
+    def _decode_labels(self, labels):
+        if not hasattr(self, "inverse_label_encoding"):
+            return labels
+        return numpy.array([self.inverse_label_encoding.get(label, label) for label in labels])
 
     def load_classifier(
         self, path: Union[str, Path], name: str = "classifier.bin"
@@ -173,6 +193,7 @@ class RiverClassifierWrapper(ClassifierWrapper):
 
     def native_fitting_function(self, X, y, *args, **kwargs):
         # Prefer batch update if the river estimator supports learn_many
+        y_encoded = self._encode_labels(y)
         if hasattr(self.classifier, "learn_many"):
             try:
                 # River expects a mapping feature_name -> array/series for batch updates.
@@ -180,14 +201,14 @@ class RiverClassifierWrapper(ClassifierWrapper):
                     X_batch = {i: X[:, i] for i in range(X.shape[1])}
                 else:
                     X_batch = X
-                self.classifier.learn_many(X_batch, y)
+                self.classifier.learn_many(X_batch, y_encoded)
                 return
             except Exception:
                 # if conversion fails, fall back to per-sample learning
                 pass
 
         # fallback: per-sample learning
-        for xi, yi in zip(X, y):
+        for xi, yi in zip(X, y_encoded):
             self.classifier.learn_one(
                 x=dict(enumerate(xi)), y=yi
             )  # ,w= weights[yi])
@@ -201,7 +222,7 @@ class RiverClassifierWrapper(ClassifierWrapper):
                 else:
                     X_batch = X
                 preds = self.classifier.predict_many(X_batch)
-                return numpy.array(list(preds))
+                return self._decode_labels(list(preds))
             except Exception:
                 # fall through to per-sample prediction on failure
                 pass
@@ -211,4 +232,4 @@ class RiverClassifierWrapper(ClassifierWrapper):
         for xi in X:
             preds.append(self.classifier.predict_one(dict(enumerate(xi))))
 
-        return numpy.array(preds)
+        return self._decode_labels(preds)

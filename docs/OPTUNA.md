@@ -15,12 +15,13 @@ This guide expands on the short README summary and documents every detail requir
   - Use `--optuna` with any config that includes an `optuna` section; omit the flag to run that config verbatim.
 
 ## Study Outputs
-Optuna writes every artifact into an `optuna/` subfolder inside the generated experiment directory:
+Optuna writes every artifact into an `optuna/` subfolder inside the generated experiment directory, and once the study closes the pipeline automatically runs `generate_optuna_trial_plots` so the visual summaries are generated without any manual steps:
 - `optuna_trials.csv` — flat table of trial parameters and metrics.
 - `optuna_summary.json` — best trials, metric names, and study metadata.
 - `trial_{n}_config.yaml` — the overrides sampled for a specific trial.
 - `trial_{n}_context.yaml` — the full runtime config after overrides.
 - `trial_{n}_result.json` — objective metrics reported by the pipeline.
+- `optuna_trials_training.png`, `optuna_trials_testing.png`, `optuna_trials_train_test_delta.png` — scatter plots produced by `src/plot_utils/plot_optuna_trials.py` (details below) that summarize every finished trial.
 
 ## Complete Config Example
 The snippet below mirrors `optuna_conf.yaml` in the repo root so you can start from a known-good baseline:
@@ -311,3 +312,21 @@ optuna:
 - The `optuna.pruner` block is honored directly—set `type` to `median`, `nop`, `successive_halving`, or `hyperband` and pass any constructor kwargs alongside it.
 - When a `test` command exists, every trial runs it immediately after training. The resulting `test_f1`/`test_fpr` become the Optuna objectives (`f1`, `fpr`), while the train metrics are reported separately. Trial logs also capture which command names ran and which dataset lists were applied.
 - When in doubt, diff your current config against this document’s example and make sure each new spec mirrors the runtime structure.
+
+## Visualizing Trials
+
+After a study finishes the pipeline triggers `src/plot_utils/plot_optuna_trials.generate_optuna_trial_plots(...)` automatically, so the three PNGs listed above appear in the same `optuna/` folder as soon as the study completes. You can re-run or customize the plots manually with:
+
+```bash
+python src/plot_utils/plot_optuna_trials.py experiments/<experiment_name>/optuna
+```
+
+Use `--annotate` to stamp the trial numbers next to every point when debugging specific overrides.
+
+The script reads `optuna_summary.json` to determine the first/second objective (e.g., `f1` vs `fpr`), loads every `trial_XXXX/metrics.json`, and saves three PNGs directly into the same `optuna/` folder:
+
+- `optuna_trials_training.png` — training metrics plotted with classifier-specific colors and inner-classifier specific markers.
+- `optuna_trials_testing.png` — testing metrics plotted with the same legend so you can compare generalization directly.
+- `optuna_trials_train_test_delta.png` — signed $(\text{train}-\text{test})$ differences for both objectives, with crosshairs at zero.
+
+Colors distinguish the outer classifier (e.g., `ARFClassifier` vs `ADWINBoostingClassifier`) and marker shapes represent nested estimators (e.g., river trees inside an ensemble). Pass `--annotate` to label points with their trial numbers if you need to trace back to a specific configuration. Because the script exposes a callable `generate_optuna_trial_plots()` function, it can also be triggered programmatically from the pipeline after `optuna` runs.

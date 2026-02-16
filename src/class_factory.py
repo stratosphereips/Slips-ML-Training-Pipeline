@@ -3,6 +3,7 @@ Exports:
  - get_transformer_class(type_name)
  - get_classifier_class(classifier_type)
  - prepare_river_nested_model_params(params)
+ - prepare_classifier_params(classifier_cls, params)
  - get_wrapper_class(wrapper_name)
  - get_mixer_class(mixer_type)
 
@@ -10,13 +11,14 @@ Dotted-path import supported. Module search lists are intentionally small.
 
 Notes:
  - Functions probe a small set of well-known modules (sklearn, river, xgboost)
-   and will raise informative ValueError/RuntimeError when packages/classes are
-   not found.
+     and will raise informative ValueError/RuntimeError when packages/classes are
+     not found.
 """
 
 
 from typing import Any
 import importlib
+from copy import deepcopy
 
 # Central list of sklearn modules for classifier resolution
 sklearn_modules = [
@@ -192,6 +194,84 @@ def prepare_river_nested_model_params(params: Any) -> Any:
         raise RuntimeError(
             f"Failed to instantiate nested river model '{inner_type}': {e}"
         )
+
+
+def prepare_classifier_params(classifier_cls, params: Any):
+    """Return a parameter mapping ready for instantiating ``classifier_cls``."""
+    if params is None:
+        return params
+    prepared = deepcopy(params)
+    if classifier_cls is None or not isinstance(prepared, dict):
+        return prepared
+    module_name = getattr(classifier_cls, "__module__", "")
+    if module_name.startswith("river.") and "metric" in prepared:
+        prepared["metric"] = _resolve_river_metric(prepared["metric"])
+    return prepared
+
+
+def _resolve_river_metric(metric_spec):
+    if metric_spec is None:
+        return None
+    if not isinstance(metric_spec, (str, dict)):
+        return metric_spec
+    try:
+        from river import metrics as river_metrics
+    except Exception as e:
+        raise RuntimeError(
+            "River metrics requested in classifier parameters but the 'river' package is unavailable"
+        ) from e
+
+    if isinstance(metric_spec, dict):
+        metric_name = metric_spec.get("name") or metric_spec.get("type")
+        metric_params = metric_spec.get("params", {}) or {}
+    else:
+        metric_name = metric_spec
+        metric_params = {}
+
+    if not isinstance(metric_name, str) or not metric_name.strip():
+        raise ValueError("Metric specification must include a non-empty string name")
+
+    import inspect
+
+    for candidate in _candidate_metric_class_names(metric_name):
+        if not hasattr(river_metrics, candidate):
+            continue
+        MetricCls = getattr(river_metrics, candidate)
+        if inspect.ismodule(MetricCls):
+            # Try same-name attribute inside the module (common for grouped metrics)
+            inner = getattr(MetricCls, candidate, None)
+            if inner is None:
+                continue
+            MetricCls = inner
+        if not inspect.isclass(MetricCls):
+            continue
+        return MetricCls(**metric_params)
+    raise ValueError(f"Unknown river metric '{metric_name}'")
+
+
+def _candidate_metric_class_names(raw_name: str):
+    normalized = raw_name.replace("-", "_").replace(" ", "_").lower()
+    pieces = [segment.capitalize() for segment in normalized.split("_") if segment]
+    camel_case = "".join(pieces)
+    candidates = [raw_name, camel_case, normalized.capitalize()]
+    alias_map = {
+        "f1": ["F1"],
+        "precision": ["Precision"],
+        "recall": ["Recall"],
+        "accuracy": ["Accuracy"],
+        "kappa": ["Kappa", "CohenKappa"],
+        #add here more aliases if you want to use these metrics
+    }
+    candidates.extend(alias_map.get(normalized, []))
+    # Preserve order but drop duplicates
+    seen = set()
+    ordered = []
+    for cand in candidates:
+        if cand in seen:
+            continue
+        seen.add(cand)
+        ordered.append(cand)
+    return ordered
 
 
 # -------------------------
