@@ -1,5 +1,5 @@
 ---
-experiment_name: optuna_example
+experiment_name: optuna_real_run
 root: /opt/Datasets/security-datasets-for-testing/
 seed: 1111
 validation_split: 0.1
@@ -42,6 +42,10 @@ preprocessing:
     - name: "scaler"
       type: "StandardScaler"
       params: {}
+    - name: "pca"
+      type: "IncrementalPCA"
+      params:
+        n_components: 7
   save_steps: true
   step_filename_template: "{name}.bin"
 
@@ -98,7 +102,7 @@ optuna:
   pruner:
     type: median
     n_warmup_steps: 5
-  n_trials: 3
+  n_trials: 2
   metric:
     - "f1"
     - "fpr"
@@ -106,12 +110,22 @@ optuna:
     - "maximize"
     - "minimize"
   hyperparameters:
+    preprocessing:
+      steps:
+      pca:
+        params:
+        n_components:
+          type: int
+          low: 5
+          high: 11
     model:
       classifier_type:
         type: categorical
         choices:
           - "river.forest.ARFClassifier"
           - "river.ensemble.ADWINBoostingClassifier"
+          # Add more classifier types here if needed
+          # (ensembles, single models, etc.)
       classifier_params:
         river.forest.ARFClassifier:
           lambda_value:
@@ -126,54 +140,108 @@ optuna:
             type: int
             low: 25
             high: 200
+          max_depth:
+            type: int
+            low: 5
+            high: 30
+          split_criterion:
+            type: categorical
+            choices:
+              - "gini"
+              - "info_gain"
+              - "hellinger"
+          delta:
+            type: float
+            low: 1.0e-8
+            high: 0.1
+            log: true
+          leaf_prediction:
+            type: categorical
+            choices:
+              - "nba"
+              - "nb"
+              - "mc"
+          metric:
+            type: categorical
+            choices:
+              - "accuracy"
+              - "kappa"
+              - "f1"
+              - "precision"
+              - "recall"
         river.ensemble.ADWINBoostingClassifier:
           n_models:
             type: int
             low: 2
-            high: 20
-          learning_rate:
-            type: float
-            low: 0.1
-            high: 1.0
+            high: 50
           model:
             type:
               type: categorical
               choices:
                 - "HoeffdingAdaptiveTreeClassifier"
                 - "HoeffdingTreeClassifier"
+                - "SGTClassifier"
+                # Add more base model types here if needed
+                # for ensembling - adwinBoost
             params:
-              HoeffdingAdaptiveTreeClassifier:
-                max_depth:
-                  type: int
-                  low: 5
-                  high: 30
-                  when:
-                    model.classifier_params.ADWINBoostingClassifier.model.type:
-                      HoeffdingAdaptiveTreeClassifier
-                delta:
-                  type: float
-                  low: 1.0e-8
-                  high: 1.0e-5
-                  log: true
-                  when:
-                    model.classifier_params.ADWINBoostingClassifier.model.type:
-                      HoeffdingAdaptiveTreeClassifier
-              HoeffdingTreeClassifier:
-                grace_period:
-                  type: int
-                  low: 50
-                  high: 500
-                  when:
-                    model.classifier_params.ADWINBoostingClassifier.model.type:
-                      HoeffdingTreeClassifier
-                split_confidence:
-                  type: float
-                  low: 1.0e-7
-                  high: 1.0e-3
-                  log: true
-                  when:
-                    model.classifier_params.ADWINBoostingClassifier.model.type:
-                      HoeffdingTreeClassifier
+              max_depth:
+                type: int
+                low: 5
+                high: 30
+                when:
+                  model.classifier_params.river.ensemble.ADWINBoostingClassifier.model.type:
+                    - "HoeffdingAdaptiveTreeClassifier"
+                    - "HoeffdingTreeClassifier"
+              delta:
+                type: float
+                low: 1.0e-8
+                high: 1.0e-5
+                log: true
+                when:
+                  model.classifier_params.river.ensemble.ADWINBoostingClassifier.model.type:
+                    - "HoeffdingAdaptiveTreeClassifier"
+              split_criterion:
+                type: categorical
+                choices:
+                  - "gini"
+                  - "info_gain"
+                  - "hellinger"
+                when:
+                  model.classifier_params.river.ensemble.ADWINBoostingClassifier.model.type:
+                    - "HoeffdingAdaptiveTreeClassifier"
+                    - "HoeffdingTreeClassifier"
+              leaf_prediction:
+                type: categorical
+                choices:
+                  - "nba"
+                  - "nb"
+                  - "mc"
+                when:
+                  model.classifier_params.river.ensemble.ADWINBoostingClassifier.model.type:
+                    - "HoeffdingAdaptiveTreeClassifier"
+                    - "HoeffdingTreeClassifier"
+              drift_window_threshold:
+                type: int
+                low: 100
+                high: 1000
+                when:
+                  model.classifier_params.river.ensemble.ADWINBoostingClassifier.model.type:
+                    - "HoeffdingAdaptiveTreeClassifier"
+              grace_period:
+                type: int
+                low: 50
+                high: 500
+                when:
+                  model.classifier_params.river.ensemble.ADWINBoostingClassifier.model.type:
+                    - "HoeffdingTreeClassifier"
+              split_confidence:
+                type: float
+                low: 1.0e-7
+                high: 1.0e-3
+                log: true
+                when:
+                  model.classifier_params.river.ensemble.ADWINBoostingClassifier.model.type:
+                    - "HoeffdingTreeClassifier"
     commands:
       - name: "train_main"
         command: "train"
@@ -183,18 +251,11 @@ optuna:
             choices:
               - "sequence"
               - "random"
-          chunk_size:
-            type: int
-            low: 2000
-            high: 10000
-            when:
-              commands[0].mixer.type: "random"
           datasets:
             type: categorical
             multiple: true
-            min: 3
-            max: 6
-            choices:
+            min: 5
+            choices: #all
               - "001"
               - "008"
               - "009"
@@ -203,3 +264,15 @@ optuna:
               - "012"
               - "013"
               - "014"
+              - "015"
+              - "016"
+              - "017"
+              - "022"
+              - "023"
+              - "024"
+              - "027"
+              - "028"
+              - "029"
+              - "032"
+              - "033"
+              - "034"
