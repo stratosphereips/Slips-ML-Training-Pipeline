@@ -3,6 +3,7 @@ import subprocess
 from pathlib import Path
 import numpy as np
 import inspect
+from datetime import datetime
 
 
 try:
@@ -18,6 +19,7 @@ try:
         get_wrapper_class,
         get_mixer_class,
         prepare_river_nested_model_params,
+        prepare_classifier_params,
     )
 except Exception:
     from class_factory import (
@@ -26,6 +28,7 @@ except Exception:
         get_wrapper_class,
         get_mixer_class,
         prepare_river_nested_model_params,
+        prepare_classifier_params,
     )
 try:
     from src.dataset_wrapper import find_and_load_datasets
@@ -62,6 +65,8 @@ class ExperimentManager:
         self.classes = cfg_reader.get_classes()
         # deterministic RNG for global usage
         self.rng = np.random.default_rng(int(cfg_reader.get_random_seed()))
+        self.current_run_label = "pipeline"
+        self.git_commit = None
 
         # resolved paths (cfg_reader guarantees experiment_dir_resolved)
         paths = self.cfg_reader.get_paths()
@@ -108,6 +113,25 @@ class ExperimentManager:
         self.train_plotting_script = str(Path(self.train_plotting_script).resolve())
         self.test_plotting_script = str(Path(self.test_plotting_script).resolve())
 
+    def set_run_label(self, label: str):
+        self.current_run_label = label or "pipeline"
+
+    def set_git_commit(self, commit_hash: str | None):
+        self.git_commit = commit_hash
+        if commit_hash:
+            self.log_event(f"Git commit: {commit_hash}")
+
+    def log_event(self, message: str):
+        if not hasattr(self, "readme_path"):
+            return
+        timestamp = datetime.now().isoformat(timespec="seconds")
+        label = getattr(self, "current_run_label", "pipeline")
+        try:
+            with open(self.readme_path, "a", encoding="utf-8") as f:
+                f.write(f"[{timestamp}] [{label}] {message}\n")
+        except Exception as exc:
+            print(f"[WARNING] Failed to write to {self.readme_path}: {exc}")
+
 # -------------------------
 # Single Build Manager (all builders combined)
 # -------------------------
@@ -125,9 +149,7 @@ class BuildManager:
         self.classifier_wrapper = None
 
     def build_loaders(self):
-        readme_path = self.exp.readme_path
-        with open(readme_path, "a", encoding="utf-8") as readme_file:
-            readme_file.write("Building dataset loaders...\n")
+        self.exp.log_event("Building dataset loaders...")
         ds = self.cfg_reader.get_dataset_loader_params()
         root = self.cfg_reader.load().get("root")
         if not root:
@@ -142,17 +164,13 @@ class BuildManager:
         return self.loaders
 
     def build_feature_extractor(self):
-        readme_path = self.exp.readme_path
-        with open(readme_path, "a", encoding="utf-8") as readme_file:
-            readme_file.write("Building feature extractor...\n")
+        self.exp.log_event("Building feature extractor...")
         params = self.cfg_reader.get_feature_extractor_params()
         self.feature_extractor = FeatureExtraction(**params)
         return self.feature_extractor
 
     def build_preprocessor(self):
-        readme_path = self.exp.readme_path
-        with open(readme_path, "a", encoding="utf-8") as readme_file:
-            readme_file.write("Building preprocessor...\n")
+        self.exp.log_event("Building preprocessor...")
         save_opts = self.cfg_reader.get_preprocessing_save_options()
         prep = PreprocessingWrapper(
             steps=[],
@@ -173,16 +191,30 @@ class BuildManager:
         self.preprocessor = prep
         return self.preprocessor
 
+    def _filter_classifier_params(self, classifier_cls, params):
+        if not isinstance(params, dict) or classifier_cls is None:
+            return params, {}
+        try:
+            signature = inspect.signature(classifier_cls)
+        except (TypeError, ValueError):
+            return params, {}
+        accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in signature.parameters.values())
+        if accepts_kwargs:
+            return params, {}
+        dropped = {}
+        for key in list(params.keys()):
+            if key not in signature.parameters:
+                dropped[key] = params.pop(key)
+        return params, dropped
+
 
     def build_classifier(self):
         spec = self.cfg_reader.get_model_spec()
         cls_type = spec.get("classifier_type") or spec.get("type")
         params = dict(spec.get("classifier_params", {}) or {})
 
-        # Log building process to readme
-        readme_path = self.exp.readme_path
-        with open(readme_path, "a", encoding="utf-8") as readme_file:
-            readme_file.write("Building classifier...\n")
+        # Log building process
+        self.exp.log_event("Building classifier...")
 
         if "model" in params and isinstance(params["model"], dict):
             params = prepare_river_nested_model_params(params)
@@ -205,13 +237,21 @@ class BuildManager:
                     if key in sig.parameters and key not in params:
                         params[key] = seed
             except Exception:
-                # If signature inspection fails, skip injection
                 pass
+
+            params = prepare_classifier_params(Cls, params)
+            params, dropped = self._filter_classifier_params(Cls, params)
+            if dropped:
+                print(
+                    f"[WARN] Classifier '{cls_type}' does not accept parameters: {sorted(dropped.keys())}"
+                )
+
             try:
                 classifier_obj = Cls(**params)
             except Exception as e:
-                print(e)
-                classifier_obj = None
+                raise RuntimeError(
+                    f"Failed to instantiate classifier '{cls_type}' with parameters {params}: {e}"
+                ) from e
 
         wrapper = Wrapper(
             classifier_obj,
@@ -248,7 +288,7 @@ class CommandExecutor:
         self.preprocessor = preprocessor
         self.classifier_wrapper = classifier_wrapper
 
-    def _ensure_command_paths(self, cmd, idx):
+    def _ensure_command_paths(self, cmd):
         """
         Ensure each command has paths injected (strings) using output layout.
         All command artifacts will live under the single output directory.
@@ -268,14 +308,10 @@ class CommandExecutor:
         mixer_spec["validation_split"] = cmd.get(
             "effective_validation_split", mixer_spec.get("validation_split", 0.0)
         )
-        # keep effective_batch_size available on command (mixers read effective_batch_size from cmd)
-        mixer_spec["effective_batch_size"] = int(cmd.get("effective_batch_size"))
         return mixer_spec
 
     def _run_train(self, idx, cmd, val_metrics=None):
-        readme_path = self.exp.readme_path
-        with open(readme_path, "a", encoding="utf-8") as readme_file:
-            readme_file.write(f"Running training command {cmd['name']}\n")
+        self.exp.log_event(f"Running training command {cmd['name']}")
         mixer_spec = self._prepare_mixer_spec(cmd)
         mixer = get_mixer_class(mixer_spec["type"])(
             mixer_spec, self.loaders, self.exp.rng
@@ -333,14 +369,11 @@ class CommandExecutor:
             name=self.cfg_reader.get_model_spec().get("save_name", "classifier.bin"),
         )
 
-        with open(readme_path, "a", encoding="utf-8") as readme_file:
-            readme_file.write(f"Successfully ending training command {cmd['name']}\n")
+        self.exp.log_event(f"Successfully ending training command {cmd['name']}")
 
 
     def _run_test(self, idx, cmd, test_metrics=None):
-        readme_path = self.exp.readme_path
-        with open(readme_path, "a", encoding="utf-8") as readme_file:
-            readme_file.write(f"Starting testing command {cmd['name']}\n")
+        self.exp.log_event(f"Starting testing command {cmd['name']}")
         mixer_spec = self._prepare_mixer_spec(cmd)
         mixer = get_mixer_class(mixer_spec["type"])(mixer_spec, self.loaders, self.exp.rng)
         mixer.reset_epoch(int(cmd["effective_batch_size"]), epoch_idx=0)
@@ -376,7 +409,7 @@ class CommandExecutor:
 
     def _run_command(self, idx, cmd):
         # ensure paths exist
-        self._ensure_command_paths(cmd, idx)
+        self._ensure_command_paths(cmd)
 
         # run the actual command
         if cmd["command"] == "train":
@@ -393,9 +426,7 @@ class CommandExecutor:
         plot_evt = f"{idx}_{cmd['command']}"
 
         # run plotting script pointing directly to the log file
-        readme_path = self.exp.readme_path
-        with open(readme_path, "a", encoding="utf-8") as readme_file:
-            readme_file.write("Starting plotting script in a subprocess\n")
+        self.exp.log_event("Starting plotting script in a subprocess")
         subprocess.run(
             [
                 "python",
@@ -423,14 +454,25 @@ class CommandExecutor:
 # PipelineRunner entry point
 # -------------------------
 class PipelineRunner:
-    def __init__(self, config_path_or_dir, optuna_mode=False, optuna_trial=None, optuna_dir=None):
+    def __init__(self, config_path_or_dir, optuna_mode=False, optuna_trial=None, optuna_dir=None, git_commit=None):
         self.optuna_mode = optuna_mode
         self.optuna_trial = optuna_trial
         self.optuna_dir = optuna_dir
+        self.git_commit = git_commit
         self.cfg_reader = ConfigReader(config_path_or_dir)
         self.exp = ExperimentManager(self.cfg_reader)
         self.exp.prepare_dirs()
         self.exp.validate_plotting_scripts()
+        run_label = "Optuna trial"
+        if self.optuna_mode and self.optuna_trial is not None:
+            run_label = f"Optuna trial {self.optuna_trial.number}"
+        elif self.optuna_mode:
+            run_label = "Optuna run"
+        else:
+            run_label = "Standard run"
+        self.exp.set_run_label(run_label)
+        self.exp.set_git_commit(git_commit)
+        self.exp.log_event(f"Initialized pipeline with config source: {config_path_or_dir}")
         bm = BuildManager(self.cfg_reader, self.exp)
         self.loaders, self.feature_extractor, self.preprocessor, self.classifier_wrapper = bm.build_all()
 
@@ -443,7 +485,9 @@ class PipelineRunner:
             self.preprocessor,
             self.classifier_wrapper,
         )
+        self.exp.log_event("Starting standard pipeline execution")
         executor.run_all()
+        self.exp.log_event("Finished standard pipeline execution")
         return True
 
     def run_optuna_trial(self, optuna_trial=None, optuna_dir=None):
@@ -458,6 +502,11 @@ class PipelineRunner:
             "train_fpr": 1.0,
             "test_f1": 0.0,
             "test_fpr": 1.0,
+            "objective_source": "train",
+            "train_command": None,
+            "train_datasets": [],
+            "test_command": None,
+            "test_datasets": [],
         }
         train_cmd = train_cmds[0]
         self.exp.prepare_dirs()
@@ -472,9 +521,13 @@ class PipelineRunner:
             self.preprocessor,
             self.classifier_wrapper,
         )
+        trial_label = f"Optuna trial {optuna_trial.number}" if optuna_trial is not None else "Optuna trial"
+        self.exp.log_event(f"Starting {trial_label}")
 
         train_idx = commands.index(train_cmd)
-        executor._ensure_command_paths(train_cmd, train_idx)
+        executor._ensure_command_paths(train_cmd)
+        metrics["train_command"] = train_cmd.get("name")
+        metrics["train_datasets"] = self._extract_dataset_list(train_cmd)
         val_counts = {"TP": 0, "FP": 0, "FN": 0, "TN": 0}
         executor._run_train(train_idx, train_cmd, val_metrics=val_counts)
         train_total = sum(val_counts.values())
@@ -490,6 +543,7 @@ class PipelineRunner:
             "fpr": train_fpr,
             "train_f1": train_f1,
             "train_fpr": train_fpr,
+            "objective_source": "train",
         })
 
         test_counts = None
@@ -497,9 +551,11 @@ class PipelineRunner:
         if test_cmds:
             test_cmd = test_cmds[0]
             test_idx = commands.index(test_cmd)
-            executor._ensure_command_paths(test_cmd, test_idx)
+            executor._ensure_command_paths(test_cmd)
             test_counts = {"TP": 0, "FP": 0, "FN": 0, "TN": 0}
             executor._run_test(test_idx, test_cmd, test_metrics=test_counts)
+            metrics["test_command"] = test_cmd.get("name")
+            metrics["test_datasets"] = self._extract_dataset_list(test_cmd)
 
         if test_counts is not None:
             test_total = sum(test_counts.values())
@@ -510,14 +566,33 @@ class PipelineRunner:
                 test_metrics_bin = compute_binary_metrics(test_counts)
                 test_f1 = test_metrics_bin.get("f1", 0.0)
                 test_fpr = test_metrics_bin.get("fpr", 0.0)
-            metrics.update({"test_f1": test_f1, "test_fpr": test_fpr})
+            metrics.update({
+                "test_f1": test_f1,
+                "test_fpr": test_fpr,
+                "f1": test_f1,
+                "fpr": test_fpr,
+                "objective_source": "test",
+            })
 
-        if optuna_dir is not None and optuna_trial is not None:
-            trial_dir = Path(optuna_dir) / f"trial_{optuna_trial.number}"
+        if optuna_dir is not None:
+            trial_dir = Path(optuna_dir)
             trial_dir.mkdir(parents=True, exist_ok=True)
             self.classifier_wrapper.save_classifier(path=str(trial_dir), name="model.bin")
             self.preprocessor.save(base_path=str(trial_dir))
+        self.exp.log_event(
+            f"Completed {trial_label} | objective_source={metrics['objective_source']} | f1={metrics['f1']:.4f} | fpr={metrics['fpr']:.4f}"
+        )
         return metrics
+
+    @staticmethod
+    def _extract_dataset_list(cmd):
+        mixer = cmd.get("mixer", {}) or {}
+        datasets = mixer.get("datasets")
+        if datasets is None:
+            return []
+        if isinstance(datasets, str):
+            return [part for part in datasets.split("|") if part]
+        return list(datasets)
 
 # -------------------------
 # CLI

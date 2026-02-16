@@ -4,14 +4,18 @@ import json
 from copy import deepcopy
 from pathlib import Path
 import time
+import traceback
 
 import optuna
+
+from plot_utils.plot_optuna_trials import generate_optuna_trial_plots
+from optuna_validator import validate_optuna_search_space
 
 
 class OptunaOptimizer:
     SPEC_TYPES = {"int", "float", "categorical", "constant", "group"}
 
-    def __init__(self, pipeline_cls, config_reader_cls, base_config, exp_dir, metric_names, search_space, n_trials=20, directions=("maximize", "minimize"), n_jobs=1, optuna_run_dir=None):
+    def __init__(self, pipeline_cls, config_reader_cls, base_config, exp_dir, metric_names, search_space, n_trials=20, directions=("maximize", "minimize"), n_jobs=1, optuna_run_dir=None, pruner_config=None, git_commit=None):
         self.pipeline_cls = pipeline_cls
         self.config_reader_cls = config_reader_cls
         self.base_config = deepcopy(base_config)
@@ -22,10 +26,15 @@ class OptunaOptimizer:
         self._log_optuna(f"[Optuna] Initialized optimizer at {self.optuna_run_dir}")
         self.metric_names = metric_names
         self.search_space = deepcopy(search_space or {})
+        validate_optuna_search_space(self.search_space)
         self.n_trials = n_trials
         self.directions = directions
         self.n_jobs = n_jobs
+        self.pruner = self._create_pruner(pruner_config or {})
+        if self.pruner is not None:
+            self._log_optuna(f"Using pruner {self.pruner.__class__.__name__}")
         self.trials_log = []
+        self.git_commit = git_commit
 
     def _log_optuna(self, msg):
         from datetime import datetime
@@ -138,31 +147,45 @@ class OptunaOptimizer:
         t0 = time.time()
         config = deepcopy(self.base_config)
         sampled_overrides = self._sample_hyperparameters(trial, config)
-        # Save only changed params for this trial
-        trial_cfg_path = self.optuna_run_dir / f"trial{trial.number}_conf.yaml"
+        trial_dir = self.optuna_run_dir / f"trial_{trial.number:04d}"
+        trial_dir.mkdir(parents=True, exist_ok=True)
         overrides_snapshot = deepcopy(sampled_overrides)
+
+        import yaml
+
+        trial_cfg_path = trial_dir / "overrides.yaml"
         with open(trial_cfg_path, "w") as f:
-            import yaml
             yaml.safe_dump(overrides_snapshot, f)
-            # Save trial context (datasets, mixer, etc.)
-            trial_context_path = self.optuna_run_dir / f"trial{trial.number}_context.yaml"
-            def extract_trial_context(cfg):
-                # Remove optuna-specific keys
-                context = deepcopy(cfg)
-                context.pop("optuna", None)
-                # Optionally, only keep relevant keys
-                # whitelist = ["dataset_loader", "features", "preprocessing", "model", "commands", "paths", "classes", "batch_size_train", "batch_size_test", "seed", "root"]
-                # context = {k: context[k] for k in whitelist if k in context}
-                return context
-            trial_context = extract_trial_context(config)
-            with open(trial_context_path, "w") as f:
-                import yaml
-                yaml.safe_dump(trial_context, f)
+
+        # Save trial context (datasets, mixer, etc.)
+        trial_context_path = trial_dir / "context.yaml"
+
+        def extract_trial_context(cfg):
+            context = deepcopy(cfg)
+            context.pop("optuna", None)
+            return context
+
+        trial_context = extract_trial_context(config)
+        with open(trial_context_path, "w") as f:
+            yaml.safe_dump(trial_context, f)
         # Run pipeline (train+val), collect metrics
-        pipeline = self.pipeline_cls(config, optuna_trial=trial, optuna_dir=self.optuna_run_dir)
-        metrics = pipeline.run_optuna_trial(optuna_trial=trial, optuna_dir=self.optuna_run_dir)  # Save model/scaler in trial dir
+        try:
+            pipeline = self.pipeline_cls(
+                config,
+                optuna_trial=trial,
+                optuna_dir=str(trial_dir),
+                git_commit=self.git_commit,
+            )
+            metrics = pipeline.run_optuna_trial(optuna_trial=trial, optuna_dir=str(trial_dir))
+        except Exception as exc:
+            t_fail = time.time()
+            tb = traceback.format_exc()
+            self._log_optuna(
+                f"Trial {trial.number} FAILED in {t_fail - t0:.1f}s | overrides: {overrides_snapshot} | error: {exc}\n{tb}"
+            )
+            raise
         # Save results
-        trial_result_path = self.optuna_run_dir / f"trial{trial.number}_result.json"
+        trial_result_path = trial_dir / "metrics.json"
         with open(trial_result_path, "w") as f:
             json.dump(metrics, f, indent=2)
         t1 = time.time()
@@ -308,7 +331,7 @@ class OptunaOptimizer:
 
     def optimize(self):
         self._log_optuna("Creating new study...")
-        study = optuna.create_study(directions=list(self.directions))
+        study = optuna.create_study(directions=list(self.directions), pruner=self.pruner)
         self._log_optuna(f"Study created. Study name: {getattr(study, 'study_name', 'N/A')}")
 
         self._log_optuna(f"Starting optimization with {self.n_trials} trials, {self.n_jobs} parallel jobs...")
@@ -332,4 +355,29 @@ class OptunaOptimizer:
         self._log_optuna(f"Optimization completed. Best trials summary: {json.dumps(summary, indent=2)}")
         with open(self.optuna_run_dir / "optuna_summary.json", "w") as f:
             json.dump(summary, f, indent=2)
+
+        try:
+            generated = generate_optuna_trial_plots(str(self.optuna_run_dir))
+            if generated:
+                rel = ", ".join(str(path.name) for path in generated)
+                self._log_optuna(f"Optuna trial plots saved: {rel}")
+            else:
+                self._log_optuna("Optuna trial plot generation produced no files (insufficient data)")
+        except Exception as exc:
+            self._log_optuna(f"Failed to generate Optuna trial plots: {exc}")
         return study
+
+    def _create_pruner(self, cfg):
+        if not cfg:
+            return None
+        pruner_type = str(cfg.get("type", "median")).lower()
+        kwargs = {k: v for k, v in cfg.items() if k != "type"}
+        if pruner_type == "median":
+            return optuna.pruners.MedianPruner(**kwargs)
+        if pruner_type in {"nop", "none", "disabled"}:
+            return optuna.pruners.NopPruner()
+        if pruner_type in {"successive_halving", "sha"}:
+            return optuna.pruners.SuccessiveHalvingPruner(**kwargs)
+        if pruner_type == "hyperband":
+            return optuna.pruners.HyperbandPruner(**kwargs)
+        raise ValueError(f"Unknown pruner type '{pruner_type}'")

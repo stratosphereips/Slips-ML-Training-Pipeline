@@ -203,8 +203,6 @@ class ConfigReader:
             # propagate effective values into mixer spec so mixers see them
             if isinstance(cmd.get("mixer"), dict):
                 cmd["mixer"]["validation_split"] = cmd["effective_validation_split"]
-                # give mixer a batch_size if not explicitly set
-                cmd["mixer"].setdefault("batch_size", cmd["effective_batch_size"])
 
         # final store
         self._resolved = effective_config
@@ -221,6 +219,7 @@ class ConfigReader:
             "metric": optuna_cfg.get("metric", "f1"),
             "directions": optuna_cfg.get("directions", ["maximize", "minimize"]),
             "hyperparameters": optuna_cfg.get("hyperparameters", {}),
+            "pruner": optuna_cfg.get("pruner", {}),
         }
 
     # ---------------- accessors ----------------

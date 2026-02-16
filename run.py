@@ -6,6 +6,7 @@ import traceback
 import yaml
 import json
 import argparse
+import subprocess
 from datetime import datetime
 
 # Insert src/ at front of sys.path so modules inside it can use relative imports
@@ -25,6 +26,22 @@ def _log_optuna_message(log_dir: Path, message: str):
     log_path = log_dir / "optuna_trials.log"
     with open(log_path, "a") as log_file:
         log_file.write(f"[{datetime.now().isoformat(timespec='seconds')}] {message}\n")
+
+
+def _get_git_commit() -> str | None:
+    repo_root = Path(__file__).resolve().parent
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(repo_root),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True,
+        )
+        return result.stdout.strip()
+    except Exception:
+        return None
 
 
 def _has_tunable_params(search_space) -> bool:
@@ -71,13 +88,17 @@ def main(config_path: str = "./default_config.yaml", optuna_mode: bool = False):
     base_config["experiment_name"] = unique_exp_dir.name
     base_config["paths"]["experiment_dir_resolved"] = str(unique_exp_dir.resolve())
 
+    git_commit = _get_git_commit()
+
     with open(unique_exp_dir / "config_effective.yaml", "w") as f:
         yaml.safe_dump(base_config, f)
     with open(unique_exp_dir / "config_effective.json", "w") as f_json:
         json.dump(base_config, f_json, indent=2)
 
     if not optuna_mode:
-        runner = PipelineRunner(str(unique_exp_dir / "config_effective.yaml"), optuna_mode=False)
+        runner = PipelineRunner(
+            str(unique_exp_dir / "config_effective.yaml"), optuna_mode=False, git_commit=git_commit
+        )
         try:
             success = runner.run()
         except Exception as e:
@@ -130,7 +151,9 @@ def main(config_path: str = "./default_config.yaml", optuna_mode: bool = False):
                 n_trials=n_trials,
                 directions=directions,
                 n_jobs=n_jobs,
-                optuna_run_dir=str(optuna_dir)
+                optuna_run_dir=str(optuna_dir),
+                pruner_config=optuna_cfg.get("pruner"),
+                git_commit=git_commit,
             )
             optimizer.optimize()
         except Exception as e:
@@ -177,7 +200,9 @@ def main(config_path: str = "./default_config.yaml", optuna_mode: bool = False):
                 n_trials=n_trials,
                 directions=directions,
                 n_jobs=n_jobs,
-                optuna_run_dir=str(optuna_dir)
+                optuna_run_dir=str(optuna_dir),
+                pruner_config=optuna_cfg.get("pruner"),
+                git_commit=git_commit,
             )
             optimizer.optimize()
         except Exception as e:
@@ -186,7 +211,9 @@ def main(config_path: str = "./default_config.yaml", optuna_mode: bool = False):
             return 2
         return 0
     else:
-        runner = PipelineRunner(str(unique_exp_dir / "config_effective.yaml"), optuna_mode=False)
+        runner = PipelineRunner(
+            str(unique_exp_dir / "config_effective.yaml"), optuna_mode=False, git_commit=git_commit
+        )
         try:
             success = runner.run()
         except Exception as e:

@@ -37,6 +37,7 @@ class PreprocessingWrapper:
         Fit transformers on first call, then use partial_fit if available on subsequent calls.
         Handles transformers with only fit or only partial_fit.
         """
+        X_current = X
         for name, transformer in self.steps:
             if transformer is None:
                 raise AttributeError(
@@ -61,8 +62,14 @@ class PreprocessingWrapper:
                 )
 
             # Call the method
-            method(X, y)
+            method(X_current, y)
             self.is_fitted[name] = True
+
+            # Propagate transformed data to the next step when possible so that
+            # downstream transformers see the same feature representation during fit
+            # and transform (prevents sklearn "valid feature names" warnings).
+            if hasattr(transformer, "transform"):
+                X_current = transformer.transform(X_current)
 
         self._has_been_fitted_once = True
 

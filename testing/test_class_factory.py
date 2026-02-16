@@ -152,3 +152,38 @@ def test_get_mixer_class_dotted(fake_module):
     mod_name, cls_name, _ = fake_module
     cls = mm.get_mixer_class(f"{mod_name}.{cls_name}")
     assert cls.__name__ == cls_name
+
+
+def test_prepare_classifier_params_noop_for_non_river():
+    class Dummy:
+        __module__ = "sklearn.linear_model"
+
+    params = {"metric": "accuracy"}
+    out = mm.prepare_classifier_params(Dummy, params)
+    assert out == params
+    assert out is not params
+
+
+def test_prepare_classifier_params_resolves_metric(monkeypatch):
+    import types
+
+    metrics_mod = types.ModuleType("river.metrics")
+
+    class Accuracy:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    setattr(metrics_mod, "Accuracy", Accuracy)
+
+    river_mod = types.ModuleType("river")
+    river_mod.metrics = metrics_mod
+
+    monkeypatch.setitem(sys.modules, "river", river_mod)
+    monkeypatch.setitem(sys.modules, "river.metrics", metrics_mod)
+
+    class Dummy:
+        __module__ = "river.testing"
+
+    params = {"metric": "accuracy"}
+    out = mm.prepare_classifier_params(Dummy, params)
+    assert isinstance(out["metric"], Accuracy)
