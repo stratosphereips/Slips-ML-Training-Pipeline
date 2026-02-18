@@ -543,6 +543,7 @@ class PipelineRunner:
             "fpr": train_fpr,
             "train_f1": train_f1,
             "train_fpr": train_fpr,
+            "train_confusion": {k: int(v) for k, v in val_counts.items()},
             "objective_source": "train",
         })
 
@@ -556,6 +557,7 @@ class PipelineRunner:
             executor._run_test(test_idx, test_cmd, test_metrics=test_counts)
             metrics["test_command"] = test_cmd.get("name")
             metrics["test_datasets"] = self._extract_dataset_list(test_cmd)
+            metrics["test_confusion"] = {k: int(v) for k, v in test_counts.items()}
 
         if test_counts is not None:
             test_total = sum(test_counts.values())

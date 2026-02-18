@@ -20,7 +20,7 @@ Optuna writes every artifact into an `optuna/` subfolder inside the generated ex
 - `optuna_summary.json` — best trials, metric names, and study metadata.
 - `trial_{n}_config.yaml` — the overrides sampled for a specific trial.
 - `trial_{n}_context.yaml` — the full runtime config after overrides.
-- `trial_{n}_result.json` — objective metrics reported by the pipeline.
+- `trial_{n}/metrics.json` — serialized train/test metrics for the trial, now including full confusion-matrix counts (`train_confusion` and `test_confusion`).
 - `optuna_trials_training.png`, `optuna_trials_testing.png`, `optuna_trials_train_test_delta.png` — scatter plots produced by `src/plot_utils/plot_optuna_trials.py` (details below) that summarize every finished trial.
 
 ## Complete Config Example
