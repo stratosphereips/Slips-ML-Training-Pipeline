@@ -315,15 +315,16 @@ optuna:
 
 ## Visualizing Trials
 
-After a study finishes the pipeline triggers `src/plot_utils/plot_optuna_trials.generate_optuna_trial_plots(...)` automatically, so the three PNGs listed above appear in the same `optuna/` folder as soon as the study completes. You can re-run or customize the plots manually with:
+After a study finishes the pipeline triggers `src/plot_utils/plot_optuna_trials.generate_optuna_trial_plots(...)` automatically, so the three PNGs listed above appear in the same `optuna/` folder as soon as the study completes. You can re-run or customize the plots manually with either the experiment root or the `optuna/` path itself:
 
 ```bash
+python src/plot_utils/plot_optuna_trials.py experiments/<experiment_name>
 python src/plot_utils/plot_optuna_trials.py experiments/<experiment_name>/optuna
 ```
 
 Use `--annotate` to stamp the trial numbers next to every point when debugging specific overrides.
 
-The script reads `optuna_summary.json` to determine the first/second objective (e.g., `f1` vs `fpr`), loads every `trial_XXXX/metrics.json`, and saves three PNGs directly into the same `optuna/` folder:
+The script reads `optuna_summary.json` to determine the first/second objective (e.g., `f1` vs `fpr`). If the summary is missing—common when a study was interrupted—it falls back to scanning whatever `trial_XXXX/metrics.json` files exist, prints a warning that it is plotting an incomplete run, and infers the metric names automatically. Either way it saves the same three PNGs directly into the `optuna/` folder:
 
 - `optuna_trials_training.png` — training metrics plotted with classifier-specific colors and inner-classifier specific markers.
 - `optuna_trials_testing.png` — testing metrics plotted with the same legend so you can compare generalization directly.

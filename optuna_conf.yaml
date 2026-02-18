@@ -97,12 +97,12 @@ commands:
         - "037"
 
 optuna:
-  n_jobs: 2
+  n_jobs: 4
   enabled: true
   pruner:
     type: median
-    n_warmup_steps: 5
-  n_trials: 2
+    n_warmup_steps: 3
+  n_trials: 16
   metric:
     - "f1"
     - "fpr"

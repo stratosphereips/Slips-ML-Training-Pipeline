@@ -16,11 +16,14 @@ import matplotlib.pyplot as plt
 import yaml
 from matplotlib.lines import Line2D
 
-# Ensure src/ is in sys.path for imports shared with the pipeline
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from base_utils import ensure_dir  # noqa: E402
+try:  # Prefer package-relative import when available
+    from .base_utils import ensure_dir  # type: ignore
+except ImportError:  # Fallback for standalone execution
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+    from base_utils import ensure_dir  # type: ignore  # noqa: E402
 
 MetricPair = Tuple[Optional[float], Optional[float]]
+DEFAULT_METRICS = ("f1", "fpr")
 
 
 @dataclass
@@ -46,9 +49,6 @@ class TrialRecord:
 
 
 _TRIAL_DIR_RE = re.compile(r"^trial_(\d+)$")
-_RESULT_FILE_RE = re.compile(r"^trial[_-]?(\d+)_result\.json$")
-_CONTEXT_FILE_RE = re.compile(r"^trial[_-]?(\d+)_context\.ya?ml$")
-_OVERRIDES_FILE_RE = re.compile(r"^trial[_-]?(\d+)_(?:conf|overrides)\.ya?ml$")
 
 
 def _read_json(path: Path) -> Dict:
@@ -63,8 +63,23 @@ def _read_yaml(path: Path) -> Dict:
 
 
 def _normalize_metric_name(name: str) -> str:
-    cleaned = name.lower().replace(" ", "_").replace("-", "_")
-    return cleaned.replace("__", "_")
+    return str(name or "").strip().lower()
+
+
+def _strip_metric_prefix(metric_key: str) -> str:
+    text = _normalize_metric_name(metric_key)
+    for prefix in ("train_", "test_"):
+        if text.startswith(prefix):
+            return text[len(prefix) :]
+    return text
+
+
+def _is_number(value) -> bool:
+    try:
+        float(value)
+        return True
+    except (TypeError, ValueError):
+        return False
 
 
 def _metric_candidates(name: str) -> List[str]:
@@ -74,20 +89,11 @@ def _metric_candidates(name: str) -> List[str]:
 
 
 def _resolve_metric_value(payload: Dict, metric_name: str, prefix: Optional[str]) -> Optional[float]:
-    for candidate in _metric_candidates(metric_name):
-        keys = [candidate]
-        if prefix:
-            keys.insert(0, f"{prefix}_{candidate}")
-        for key in keys:
-            if key in payload:
-                value = payload[key]
-                if value is None:
-                    return None
-                try:
-                    return float(value)
-                except (TypeError, ValueError):
-                    return None
-    return None
+    key = f"{prefix}_{metric_name}" if prefix else metric_name
+    value = payload.get(key)
+    if value is None and prefix == "test":
+        value = payload.get(metric_name)
+    return float(value) if _is_number(value) else None
 
 
 def _first_existing(directory: Path, names: Sequence[str]) -> Optional[Path]:
@@ -98,72 +104,73 @@ def _first_existing(directory: Path, names: Sequence[str]) -> Optional[Path]:
     return None
 
 
+def _first_existing(directory: Path, candidates: Sequence[str]) -> Optional[Path]:
+    for name in candidates:
+        path = directory / name
+        if path.exists():
+            return path
+    return None
+
+
 def _discover_trial_files(optuna_dir: Path) -> List[TrialFiles]:
-    entries: Dict[int, Dict[str, Optional[Path]]] = {}
-
-    def ensure_entry(number: int) -> Dict[str, Optional[Path]]:
-        if number not in entries:
-            entries[number] = {
-                "metrics_path": None,
-                "context_path": None,
-                "overrides_path": None,
-            }
-        return entries[number]
-
-    for child in sorted(p for p in optuna_dir.iterdir() if p.is_dir()):
+    records: List[TrialFiles] = []
+    for child in sorted(optuna_dir.iterdir()):
+        if not child.is_dir():
+            continue
         match = _TRIAL_DIR_RE.match(child.name)
         if not match:
             continue
         number = int(match.group(1))
-        entry = ensure_entry(number)
-        if entry["metrics_path"] is None:
-            entry["metrics_path"] = _first_existing(
-                child,
-                (
-                    "metrics.json",
-                    "results.json",
-                    "result.json",
-                    f"trial_{number:04d}_result.json",
-                ),
-            )
-        entry["context_path"] = entry["context_path"] or (child / "context.yaml" if (child / "context.yaml").exists() else None)
-        entry["overrides_path"] = entry["overrides_path"] or (child / "overrides.yaml" if (child / "overrides.yaml").exists() else None)
-
-    for child in sorted(p for p in optuna_dir.iterdir() if p.is_file()):
-        name = child.name
-        metrics_match = _RESULT_FILE_RE.match(name)
-        if metrics_match:
-            number = int(metrics_match.group(1))
-            entry = ensure_entry(number)
-            entry["metrics_path"] = entry["metrics_path"] or child
+        metrics_path = _first_existing(
+            child,
+            (
+                "metrics.json",
+                "results.json",
+                "result.json",
+                f"{child.name}_result.json",
+            ),
+        )
+        if not metrics_path:
             continue
-        context_match = _CONTEXT_FILE_RE.match(name)
-        if context_match:
-            number = int(context_match.group(1))
-            entry = ensure_entry(number)
-            entry["context_path"] = entry["context_path"] or child
-            continue
-        overrides_match = _OVERRIDES_FILE_RE.match(name)
-        if overrides_match:
-            number = int(overrides_match.group(1))
-            entry = ensure_entry(number)
-            entry["overrides_path"] = entry["overrides_path"] or child
-
-    records: List[TrialFiles] = []
-    for number in sorted(entries):
-        data = entries[number]
-        metrics_path = data["metrics_path"]
-        if metrics_path is None:
-            continue
+        context_path = child / "context.yaml"
+        if not context_path.exists():
+            context_path = None
+        overrides_path = child / "overrides.yaml"
+        if not overrides_path.exists():
+            overrides_path = None
         records.append(
             TrialFiles(
                 number=number,
                 metrics_path=metrics_path,
-                context_path=data["context_path"],
-                overrides_path=data["overrides_path"],
+                context_path=context_path,
+                overrides_path=overrides_path,
             )
         )
     return records
+
+
+def _load_summary(optuna_path: Path) -> Tuple[Dict, bool]:
+    summary_path = optuna_path / "optuna_summary.json"
+    if summary_path.is_file():
+        with open(summary_path, "r") as fh:
+            return json.load(fh), True
+    return {}, False
+
+
+def _infer_metric_names_from_trials(trial_files: Sequence[TrialFiles]) -> List[str]:
+    ordered: List[str] = []
+    seen = set()
+    for files in trial_files:
+        payload = _read_json(files.metrics_path)
+        for key, value in payload.items():
+            if not _is_number(value):
+                continue
+            base_name = _strip_metric_prefix(key)
+            if not base_name or base_name in seen:
+                continue
+            seen.add(base_name)
+            ordered.append(base_name)
+    return ordered
 
 
 def _extract_inner_classifier(params: Dict) -> Optional[str]:
@@ -350,7 +357,8 @@ def _scatter_points(
     legend1 = ax.legend(
         handles=color_handles,
         title="Classifier",
-        loc="best",
+        loc="upper left",
+        bbox_to_anchor=(1.02, 1.0),
         frameon=True,
         fontsize=8,
     )
@@ -358,7 +366,8 @@ def _scatter_points(
     ax.legend(
         handles=marker_handles,
         title="Inner classifier",
-        loc="lower right",
+        loc="upper left",
+        bbox_to_anchor=(1.02, 0.45),
         fontsize=8,
     )
 
@@ -450,7 +459,8 @@ def _scatter_deltas(
     legend1 = ax.legend(
         handles=color_handles,
         title="Classifier",
-        loc="best",
+        loc="upper left",
+        bbox_to_anchor=(1.02, 1.0),
         frameon=True,
         fontsize=8,
     )
@@ -458,7 +468,8 @@ def _scatter_deltas(
     ax.legend(
         handles=marker_handles,
         title="Inner classifier",
-        loc="lower right",
+        loc="upper left",
+        bbox_to_anchor=(1.02, 0.45),
         fontsize=8,
     )
 
@@ -472,18 +483,44 @@ def _scatter_deltas(
 
 def generate_optuna_trial_plots(optuna_dir: str, annotate: bool = False) -> List[Path]:
     optuna_path = Path(optuna_dir).expanduser().resolve()
-    summary_path = optuna_path / "optuna_summary.json"
-    if not summary_path.exists():
-        raise FileNotFoundError(f"Missing optuna_summary.json in {optuna_path}")
-
-    summary = _read_json(summary_path)
-    metric_names = summary.get("metric_names") or []
-    if len(metric_names) < 2:
-        raise ValueError("optuna_summary.json must list at least two metric_names")
-
+    if optuna_path.name != "optuna" and (optuna_path / "optuna").is_dir():
+        optuna_path = optuna_path / "optuna"
+        print(f"[INFO] Using optuna folder: {optuna_path}")
     trial_files = _discover_trial_files(optuna_path)
     if not trial_files:
         raise RuntimeError(f"No trial metrics found in {optuna_path}")
+
+    summary, summary_present = _load_summary(optuna_path)
+    metric_names = []
+    for raw in summary.get("metric_names", []):
+        text = str(raw).strip()
+        if not text:
+            continue
+        normalized = _normalize_metric_name(text)
+        if normalized not in metric_names:
+            metric_names.append(normalized)
+
+    if not summary_present:
+        print("[WARN] optuna_summary.json missing; treating this as an incomplete run and inferring metrics from finished trials.")
+
+    if len(metric_names) < 2:
+        inferred = _infer_metric_names_from_trials(trial_files)
+        for name in inferred:
+            normalized = _normalize_metric_name(name)
+            if normalized and normalized not in metric_names:
+                metric_names.append(normalized)
+
+    if len(metric_names) < 2:
+        for fallback in DEFAULT_METRICS:
+            if fallback not in metric_names:
+                metric_names.append(fallback)
+            if len(metric_names) >= 2:
+                break
+
+    if len(metric_names) < 2:
+        raise ValueError("Unable to determine at least two metric names for plotting")
+
+    metric_names = metric_names[:2]
 
     records: List[TrialRecord] = []
     for files in trial_files:
