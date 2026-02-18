@@ -32,11 +32,12 @@ sklearn_modules = [
 
 # Central list of river modules for classifier resolution (primary and nested)
 river_modules = [
-    "river.tree",
-    "river.ensemble",
-    "river.linear_model",
-    "river.forest",
-    "river.neighbors",
+    "river.tree", #sgt tree, hoeffding tree, etc.
+    "river.ensemble", #adwin boosting
+    "river.linear_model",  # e.g., ALMAClassifier and other online linear models
+    "river.forest", #ARF
+    "river.neighbors", #KNN
+    #Rest is for compatibility with nested models etc.
     "river.naive_bayes",
     "river.neural_net",
     "river.preprocessing",

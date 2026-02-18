@@ -156,6 +156,10 @@ optuna:
         choices:
           - "river.forest.ARFClassifier"
           - "river.ensemble.ADWINBoostingClassifier"
+          - "river.linear_model.ALMAClassifier"
+          - "river.neighbors.KNNClassifier"
+          - "river.linear_model.PAClassifier"
+          - "river.tree.SGTClassifier"
       classifier_params:
         river.forest.ARFClassifier:
           lambda_value:
@@ -294,6 +298,17 @@ optuna:
               - "013"
               - "014"
 ```
+
+### Built-in Classifier Options
+
+The default search space wires six classifier families; you can reference the same dotted names when extending the config:
+
+- `river.forest.ARFClassifier` — tunes `lambda_value`, `n_models`, `grace_period`, `max_depth`, `split_criterion`, `delta`, `leaf_prediction`, and the river metric plus optional SGT-specific knobs.
+- `river.ensemble.ADWINBoostingClassifier` — adds `n_models` plus nested base learners (`HoeffdingAdaptiveTreeClassifier`, `HoeffdingTreeClassifier`, `SGTClassifier`, `ALMAClassifier`, `PAClassifier`) with depth, delta, split criterion, leaf prediction, drift window, etc.; the SGT/ALMA/PA options reuse the same parameter knobs described below so ensembling linear or gradient-tree models requires no extra YAML.
+- `river.linear_model.ALMAClassifier` — exposes the online large-margin parameters `p`, `alpha`, `B`, and `C` so you can explore lighter-weight models from the `river.linear_model` package.
+- `river.neighbors.KNNClassifier` — lets you sweep `n_neighbors`, `weighted`, `cleanup_every`, and `softmax` for streaming k-NN models (default engine is used unless you add a custom one to the config).
+- `river.linear_model.PAClassifier` — toggles the passive-aggressive knobs `C`, `mode` (0, 1, or 2), and `learn_intercept` so you can balance aggressiveness vs. stability for linear separators.
+- `river.tree.SGTClassifier` — now exposes every major knob (`delta`, `grace_period`, `init_pred`, `max_depth`, `lambda_value`, `gamma`, plus optional nominal attributes/quantizer toggles) and the same block is reused anywhere SGT appears (top-level, ARF leaves, or ADWIN weak learners).
 
 ## Valid Optuna Config Rules
 - **Mirror the runtime tree.** The nested structure under `optuna.hyperparameters` must be identical to the runtime config so the optimizer can build paths automatically.

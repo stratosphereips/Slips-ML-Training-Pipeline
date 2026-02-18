@@ -1,5 +1,5 @@
 ---
-experiment_name: optuna_real_run
+experiment_name: optuna_real_run_long
 root: /opt/Datasets/security-datasets-for-testing/
 seed: 1111
 validation_split: 0.1
@@ -95,14 +95,16 @@ commands:
         - "035"
         - "036"
         - "037"
+# if --optuna is set, some defaults will be overwritten.
+# test command at the end is fixed and reused
 
 optuna:
-  n_jobs: 4
+  n_jobs: 16
   enabled: true
   pruner:
     type: median
     n_warmup_steps: 3
-  n_trials: 16
+  n_trials: 2048
   metric:
     - "f1"
     - "fpr"
@@ -116,7 +118,7 @@ optuna:
         params:
         n_components:
           type: int
-          low: 5
+          low: 3
           high: 11
     model:
       classifier_type:
@@ -124,9 +126,41 @@ optuna:
         choices:
           - "river.forest.ARFClassifier"
           - "river.ensemble.ADWINBoostingClassifier"
+          - "river.linear_model.ALMAClassifier"
+          - "river.neighbors.KNNClassifier"
+          - "river.linear_model.PAClassifier"
+          - "river.tree.SGTClassifier"
           # Add more classifier types here if needed
           # (ensembles, single models, etc.)
       classifier_params:
+        river.tree.SGTClassifier: &SGT_PARAM_SPECS
+          delta:
+            type: float
+            low: 1.0e-8
+            high: 1.0e-4
+            log: true
+          grace_period:
+            type: int
+            low: 25
+            high: 400
+          init_pred:
+            type: float
+            low: -1.5
+            high: 1.5
+          max_depth:
+            type: int
+            low: 5
+            high: 50
+          lambda_value:
+            type: float
+            low: 0.001
+            high: 1.0
+            log: true
+          gamma:
+            type: float
+            low: 0.01
+            high: 10.0
+            log: true
         river.forest.ARFClassifier:
           lambda_value:
             type: int
@@ -169,6 +203,41 @@ optuna:
               - "f1"
               - "precision"
               - "recall"
+        river.linear_model.ALMAClassifier: &ALMA_PARAM_SPECS
+          p:
+            type: categorical
+            choices:
+              - 1
+              - 2
+          alpha:
+            type: float
+            low: 0.1
+            high: 0.99
+          B:
+            type: float
+            low: 0.5
+            high: 2.0
+          C:
+            type: float
+            low: 0.5
+            high: 2.0
+        river.linear_model.PAClassifier: &PA_PARAM_SPECS
+          C:
+            type: float
+            low: 0.01
+            high: 10.0
+            log: true
+          mode:
+            type: categorical
+            choices:
+              - 0
+              - 1
+              - 2
+          learn_intercept:
+            type: categorical
+            choices:
+              - true
+              - false
         river.ensemble.ADWINBoostingClassifier:
           n_models:
             type: int
@@ -177,10 +246,12 @@ optuna:
           model:
             type:
               type: categorical
-              choices:
+              choices: # weak learners
                 - "HoeffdingAdaptiveTreeClassifier"
                 - "HoeffdingTreeClassifier"
                 - "SGTClassifier"
+                - "ALMAClassifier"
+                - "PAClassifier"
                 # Add more base model types here if needed
                 # for ensembling - adwinBoost
             params:
@@ -242,6 +313,43 @@ optuna:
                 when:
                   model.classifier_params.river.ensemble.ADWINBoostingClassifier.model.type:
                     - "HoeffdingTreeClassifier"
+              SGTClassifier:
+                type: group
+                when:
+                  model.classifier_params.river.ensemble.ADWINBoostingClassifier.model.type:
+                    - "SGTClassifier"
+                params: *SGT_PARAM_SPECS
+              ALMAClassifier:
+                type: group
+                when:
+                  model.classifier_params.river.ensemble.ADWINBoostingClassifier.model.type:
+                    - "ALMAClassifier"
+                params: *ALMA_PARAM_SPECS
+              PAClassifier:
+                type: group
+                when:
+                  model.classifier_params.river.ensemble.ADWINBoostingClassifier.model.type:
+                    - "PAClassifier"
+                params: *PA_PARAM_SPECS
+        river.neighbors.KNNClassifier:
+          n_neighbors:
+            type: int
+            low: 1
+            high: 100
+          weighted:
+            type: categorical
+            choices:
+              - true
+              - false
+          cleanup_every:
+            type: int
+            low: 0
+            high: 500
+          softmax:
+            type: categorical
+            choices:
+              - true
+              - false
     commands:
       - name: "train_main"
         command: "train"
@@ -254,8 +362,8 @@ optuna:
           datasets:
             type: categorical
             multiple: true
-            min: 5
-            choices: #all
+            min: 3
+            choices:
               - "001"
               - "008"
               - "009"
