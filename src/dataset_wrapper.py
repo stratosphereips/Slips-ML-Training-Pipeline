@@ -7,8 +7,8 @@
 #   - Defaults unlabeled flows to BENIGN.
 #   - Stores index in cache/ directory for large files (>50k valid flows) and reloads automatically.
 
-from commons import BENIGN, MALICIOUS, BACKGROUND
-from conn_normalizer import ConnToSlipsConverter
+from .commons import BENIGN, MALICIOUS, BACKGROUND
+from .conn_normalizer import ConnToSlipsConverter
 import random
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -283,8 +283,44 @@ class ZeekDataset:
 # -------------------
 
 
-@lru_cache(maxsize=None)
 def find_and_load_datasets(
+    root_dir,
+    batch_size=1000,
+    prefix_regex=r"^\d{3}",
+    data_subdir="data",
+    seed=None,
+    persist_cache_threshold=30000,
+    cache_dir=None,
+    labeled_filenames=None,
+    file_encoding="utf-8",
+    file_errors="ignore",
+    shuffle_per_epoch=False,
+) -> Dict[str, ZeekDataset]:
+    """Public wrapper that keeps the original API while feeding hashable args to the cache."""
+
+    normalized_labeled = (
+        tuple(labeled_filenames)
+        if labeled_filenames is not None
+        else None
+    )
+
+    return _cached_find_and_load_datasets(
+        root_dir,
+        batch_size,
+        prefix_regex,
+        data_subdir,
+        seed,
+        persist_cache_threshold,
+        cache_dir,
+        normalized_labeled,
+        file_encoding,
+        file_errors,
+        shuffle_per_epoch,
+    )
+
+
+@lru_cache(maxsize=None)
+def _cached_find_and_load_datasets(
     root_dir,
     batch_size=1000,
     prefix_regex=r"^\d{3}",
@@ -303,11 +339,7 @@ def find_and_load_datasets(
     # Normalize arguments before any filesystem access so the cache key is stable
     root_path = Path(root_dir).resolve()
     cache_path = Path(cache_dir).resolve() if cache_dir is not None else None
-    labeled_files = (
-        tuple(labeled_filenames)
-        if labeled_filenames is not None
-        else None
-    )
+    labeled_files = labeled_filenames
     prefix_pattern = str(prefix_regex)
     data_subdir = str(data_subdir)
     file_encoding = str(file_encoding)
