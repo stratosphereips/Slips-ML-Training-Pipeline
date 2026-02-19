@@ -9,6 +9,7 @@ from src.dataset_wrapper import (
     find_and_load_datasets,
 )
 from src.commons import BENIGN, MALICIOUS, BACKGROUND
+from src.conn_normalizer import CANONICAL_FIELDS
 
 
 class TestZeekDataset:
@@ -230,12 +231,12 @@ class TestZeekDataset:
         df = ds.as_dataframe()
         line = df.iloc[0]
         # Check types are correct
-        assert isinstance(line["ts"], float)
+        assert isinstance(line["starttime"], float)
         assert isinstance(line["uid"], str)
-        assert isinstance(line["id.orig_p"], Integral)
-        assert isinstance(line["duration"], float)
-        assert isinstance(line["orig_bytes"], Integral)
-        assert line["label"] in [str(BENIGN), str(MALICIOUS)]
+        assert isinstance(line["sport"], Integral)
+        assert isinstance(line["dur"], float)
+        assert isinstance(line["sbytes"], Integral)
+        assert line["ground_truth_label"] in [str(BENIGN), str(MALICIOUS)]
 
     # ========== DataFrame Access Tests ==========
     def test_as_dataframe_returns_all_valid_rows(self, sample_conn_log, temp_dir):
@@ -244,8 +245,8 @@ class TestZeekDataset:
         df = ds.as_dataframe()
 
         assert len(df) == ds.total_lines == 4
-        assert set(df.columns) == set(ds.headers)
-        assert "label" in df.columns
+        assert set(df.columns) == set(CANONICAL_FIELDS)
+        assert "ground_truth_label" in df.columns
 
     def test_as_dataframe_cached_instance(self, sample_conn_log, temp_dir):
         """Repeated calls to as_dataframe should reuse cached DataFrame."""
