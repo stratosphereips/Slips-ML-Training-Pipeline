@@ -201,12 +201,21 @@ def prepare_classifier_params(classifier_cls, params: Any):
     """Return a parameter mapping ready for instantiating ``classifier_cls``."""
     if params is None:
         return params
-    prepared = deepcopy(params)
+    if isinstance(params, dict):
+        prepared = dict(params)
+    else:
+        prepared = deepcopy(params)
     if classifier_cls is None or not isinstance(prepared, dict):
         return prepared
     module_name = getattr(classifier_cls, "__module__", "")
     if module_name.startswith("river.") and "metric" in prepared:
         prepared["metric"] = _resolve_river_metric(prepared["metric"])
+    classifier_name = getattr(classifier_cls, "__name__", "").lower()
+    targets_knn = module_name.startswith("river.neighbors") and (
+        "knn_classifier" in module_name or classifier_name.endswith("knnclassifier")
+    )
+    if targets_knn:
+        _ensure_knn_stable_optimizer(prepared)
     return prepared
 
 
@@ -273,6 +282,17 @@ def _candidate_metric_class_names(raw_name: str):
         seen.add(cand)
         ordered.append(cand)
     return ordered
+
+
+def _ensure_knn_stable_optimizer(params: dict):
+    """Fallback to a brute-force optimizer to avoid SWINN graph corruption."""
+    if params.get("optimizer") is not None:
+        return
+    try:
+        from river.neighbors import BruteForce  # Lazy import for optional dep
+    except Exception:
+        return
+    params["optimizer"] = BruteForce()
 
 
 # -------------------------

@@ -88,6 +88,10 @@ Malicious         240242     9998     7776    29793   0.8695   0.9686   0.8897  
 Total test lines processed: 576
 ```
 
+### Optuna study visuals
+
+When the pipeline finishes an Optuna study it now drops a structured `optuna/visuals/` folder inside the experiment. Each configured command gets its own scatter plot under `visuals/commands/<command_slug>/<command_key>_metrics.png`, the primary train/test pair produces a single delta chart inside `visuals/deltas/`, and the Pareto-only views live under `visuals/pareto/`. All figures share the same color/marker legend so you can compare commands quickly, and the filenames make it obvious which command produced which metrics. See [docs/OPTUNA.md](docs/OPTUNA.md) for a detailed breakdown.
+
 ## Profiling the Pipeline
 
 You can profile the pipeline to find performance bottlenecks using Python's built-in cProfile and visualize the results with snakeviz.
