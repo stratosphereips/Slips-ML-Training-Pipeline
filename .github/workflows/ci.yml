@@ -16,7 +16,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pre-commit pytest numpy pandas optuna
+          pip install -r requirements.txt
 
       - name: Run pre-commit
         run: pre-commit run --all-files
