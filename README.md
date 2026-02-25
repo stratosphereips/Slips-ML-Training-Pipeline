@@ -1,4 +1,12 @@
 
+## What this is and how to use?
+This repo contains a supplemntary ML pipeline for training cybersecurity models, that are to be used in SLIPS project, maintained by Stratosphere lab. The pipeline is separated from SLIPS, but tries to keep the models fully compatible /loadable in SLIPS ML modules.
+- How to run:
+```bash
+cd /path/to/this/repo
+python run.py ./path/to/config.yaml [--optuna]
+```
+
 ## Architecture
 
 The pipeline is assembled end-to-end at runtime from the YAML config:
