@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import argparse
 import json
 import os
@@ -10,7 +11,7 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 import matplotlib.pyplot as plt
 import yaml
@@ -24,6 +25,7 @@ except ImportError:  # Fallback for standalone execution
 
 MetricPair = Tuple[Optional[float], Optional[float]]
 DEFAULT_METRICS = ("f1", "fpr")
+DEFAULT_DIRECTIONS = ("maximize", "minimize")
 
 
 @dataclass
@@ -31,9 +33,20 @@ class TrialFiles:
     """Paths associated with a single Optuna trial."""
 
     number: int
-    metrics_path: Path
+    directory: Path
+    metrics_path: Optional[Path] = None
     context_path: Optional[Path] = None
     overrides_path: Optional[Path] = None
+
+
+@dataclass
+class CommandSpec:
+    key: str
+    name: str
+    command_type: str
+    prefixes: List[str]
+    folder_name: str
+    display_name: str
 
 
 @dataclass
@@ -45,7 +58,8 @@ class TrialRecord:
     inner_classifier: Optional[str]
     train: MetricPair
     test: MetricPair
-    metrics_path: Path
+    metrics_path: Optional[Path]
+    per_command: Dict[str, MetricPair]
 
 
 _TRIAL_DIR_RE = re.compile(r"^trial_(\d+)$")
@@ -74,6 +88,15 @@ def _strip_metric_prefix(metric_key: str) -> str:
     return text
 
 
+def _normalize_direction(value: str) -> Optional[str]:
+    text = str(value or "").strip().lower()
+    if text in {"max", "maximize", "maximization"}:
+        return "maximize"
+    if text in {"min", "minimize", "minimization"}:
+        return "minimize"
+    return None
+
+
 def _is_number(value) -> bool:
     try:
         float(value)
@@ -96,20 +119,18 @@ def _resolve_metric_value(payload: Dict, metric_name: str, prefix: Optional[str]
     return float(value) if _is_number(value) else None
 
 
-def _first_existing(directory: Path, names: Sequence[str]) -> Optional[Path]:
-    for name in names:
-        candidate = directory / name
-        if candidate.exists():
-            return candidate
-    return None
-
-
 def _first_existing(directory: Path, candidates: Sequence[str]) -> Optional[Path]:
     for name in candidates:
         path = directory / name
         if path.exists():
             return path
     return None
+
+
+def _slugify(text: str) -> str:
+    base = re.sub(r"[^0-9a-zA-Z]+", "_", (text or "").strip())
+    base = base.strip("_") or "unnamed"
+    return base.lower()
 
 
 def _discover_trial_files(optuna_dir: Path) -> List[TrialFiles]:
@@ -130,8 +151,6 @@ def _discover_trial_files(optuna_dir: Path) -> List[TrialFiles]:
                 f"{child.name}_result.json",
             ),
         )
-        if not metrics_path:
-            continue
         context_path = child / "context.yaml"
         if not context_path.exists():
             context_path = None
@@ -141,12 +160,29 @@ def _discover_trial_files(optuna_dir: Path) -> List[TrialFiles]:
         records.append(
             TrialFiles(
                 number=number,
+                directory=child,
                 metrics_path=metrics_path,
                 context_path=context_path,
                 overrides_path=overrides_path,
             )
         )
     return records
+
+
+def _resolve_command_pair(
+    payload: Dict,
+    metric_names: Sequence[str],
+    prefixes: Sequence[str],
+) -> MetricPair:
+    if len(metric_names) < 2:
+        return (None, None)
+    metric_a, metric_b = metric_names[:2]
+    for prefix in prefixes:
+        x_val = _resolve_metric_value(payload, metric_a, prefix=prefix)
+        y_val = _resolve_metric_value(payload, metric_b, prefix=prefix)
+        if x_val is not None or y_val is not None:
+            return (x_val, y_val)
+    return (None, None)
 
 
 def _load_summary(optuna_path: Path) -> Tuple[Dict, bool]:
@@ -157,11 +193,217 @@ def _load_summary(optuna_path: Path) -> Tuple[Dict, bool]:
     return {}, False
 
 
-def _infer_metric_names_from_trials(trial_files: Sequence[TrialFiles]) -> List[str]:
+def _parse_log_metrics(optuna_path: Path) -> Dict[int, Dict]:
+    log_path = optuna_path / "optuna_trials.log"
+    if not log_path.is_file():
+        return {}
+    pattern = re.compile(r"Finished trial (\d+)[^|]*\| metrics:\s*(\{.*\})\s*$")
+    results: Dict[int, Dict] = {}
+    for line in log_path.read_text().splitlines():
+        match = pattern.search(line)
+        if not match:
+            continue
+        trial_num = int(match.group(1))
+        payload_text = match.group(2).strip()
+        try:
+            payload = ast.literal_eval(payload_text)
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            results[trial_num] = payload
+    return results
+
+
+def _ensure_list(value) -> List:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [value]
+
+
+def _load_config_metrics(optuna_path: Path) -> Tuple[List[str], Dict[str, str], Optional[Dict]]:
+    experiment_root = optuna_path.parent
+    if experiment_root == optuna_path:
+        return [], {}, None
+    candidates = (
+        "config_effective.yaml",
+        "config_effective.yml",
+        "config_effective.json",
+        "config.yaml",
+        "config.yml",
+        "config.json",
+        "default_config.yaml",
+        "default_config.yml",
+        "default_config.json",
+    )
+    for name in candidates:
+        cfg_path = experiment_root / name
+        if not cfg_path.is_file():
+            continue
+        try:
+            if cfg_path.suffix in {".yaml", ".yml"}:
+                data = _read_yaml(cfg_path)
+            elif cfg_path.suffix == ".json":
+                data = _read_json(cfg_path)
+            else:
+                continue
+        except Exception:
+            continue
+        optuna_block = data.get("optuna") if isinstance(data, dict) else None
+        if not isinstance(optuna_block, dict):
+            continue
+        metrics_raw = _ensure_list(optuna_block.get("metric") or optuna_block.get("metrics"))
+        directions_raw = _ensure_list(optuna_block.get("directions"))
+        metrics: List[str] = []
+        dir_map: Dict[str, str] = {}
+        for idx, raw_metric in enumerate(metrics_raw):
+            normalized = _normalize_metric_name(raw_metric)
+            if not normalized:
+                continue
+            if normalized not in metrics:
+                metrics.append(normalized)
+            if idx < len(directions_raw):
+                direction = _normalize_direction(directions_raw[idx])
+                if direction:
+                    dir_map[normalized] = direction
+        return metrics, dir_map, data
+    return [], {}, None
+
+
+def _default_command_specs() -> List[CommandSpec]:
+    return [
+        CommandSpec(
+            key="train",
+            name="train",
+            command_type="train",
+            prefixes=["train"],
+            folder_name="train",
+            display_name="Train",
+        ),
+        CommandSpec(
+            key="test",
+            name="test",
+            command_type="test",
+            prefixes=["test"],
+            folder_name="test",
+            display_name="Test",
+        ),
+    ]
+
+
+def _load_commands_spec(
+    trial_files: Sequence[TrialFiles],
+    fallback_config: Optional[Dict],
+) -> List[CommandSpec]:
+    def extract_commands(cfg: Optional[Dict]) -> Optional[List[Dict]]:
+        if not isinstance(cfg, dict):
+            return None
+        commands = cfg.get("commands")
+        return commands if isinstance(commands, list) else None
+
+    commands_block: Optional[List[Dict]] = None
+    for files in trial_files:
+        if files.context_path and files.context_path.exists():
+            cfg = _read_yaml(files.context_path)
+            commands_block = extract_commands(cfg)
+            if commands_block:
+                break
+    if not commands_block and fallback_config:
+        commands_block = extract_commands(fallback_config)
+
+    if not commands_block:
+        return _default_command_specs()
+
+    specs: List[CommandSpec] = []
+    used_keys: Set[str] = set()
+    train_count = 0
+    test_count = 0
+    other_counts: Dict[str, int] = {}
+
+    for idx, cmd in enumerate(commands_block):
+        name = cmd.get("name") if isinstance(cmd, dict) else None
+        if not isinstance(name, str) or not name.strip():
+            name = f"command_{idx}"
+        display_name = name
+        slug = _slugify(name)
+        cmd_type = "custom"
+        if isinstance(cmd, dict):
+            cmd_type = str(cmd.get("command") or "custom").strip().lower() or "custom"
+
+        if cmd_type == "train":
+            train_count += 1
+            key = "train" if train_count == 1 else f"train{train_count}"
+        elif cmd_type == "test":
+            test_count += 1
+            key = "test" if test_count == 1 else f"test{test_count}"
+        else:
+            other_counts.setdefault(cmd_type, 0)
+            other_counts[cmd_type] += 1
+            key = slug or f"cmd{idx}"
+            if other_counts[cmd_type] > 1:
+                key = f"{key}{other_counts[cmd_type]}"
+
+        base_key = key
+        suffix = 2
+        while key in used_keys:
+            key = f"{base_key}{suffix}"
+            suffix += 1
+        used_keys.add(key)
+
+        prefixes = [key]
+        if slug and slug not in prefixes:
+            prefixes.append(slug)
+        if cmd_type == "train" and "train" not in prefixes:
+            prefixes.append("train")
+        if cmd_type == "test" and "test" not in prefixes:
+            prefixes.append("test")
+        prefixes = [p for p in prefixes if p]
+
+        specs.append(
+            CommandSpec(
+                key=key,
+                name=name,
+                command_type=cmd_type,
+                prefixes=prefixes,
+                folder_name=slug or key,
+                display_name=display_name,
+            )
+        )
+
+    return specs or _default_command_specs()
+
+
+def _load_trial_payload(
+    files: TrialFiles,
+    log_metrics: Dict[int, Dict],
+    cache: Dict[int, Dict],
+) -> Optional[Dict]:
+    if files.number in cache:
+        return cache[files.number]
+    payload: Optional[Dict] = None
+    path = files.metrics_path
+    if path and path.exists():
+        try:
+            payload = _read_json(path)
+        except Exception:
+            payload = None
+    if payload is None:
+        payload = log_metrics.get(files.number)
+    if payload is not None:
+        cache[files.number] = payload
+    return payload
+
+
+def _infer_metric_names_from_trials(
+    trial_files: Sequence[TrialFiles],
+    log_metrics: Dict[int, Dict],
+    payload_cache: Dict[int, Dict],
+) -> List[str]:
     ordered: List[str] = []
     seen = set()
     for files in trial_files:
-        payload = _read_json(files.metrics_path)
+        payload = _load_trial_payload(files, log_metrics, payload_cache)
         for key, value in payload.items():
             if not _is_number(value):
                 continue
@@ -214,17 +456,25 @@ def _extract_classifier_info(context_path: Optional[Path], overrides_path: Optio
     return classifier or "UnknownClassifier", inner_classifier
 
 
-def _build_trial_record(files: TrialFiles, metric_names: Sequence[str]) -> Optional[TrialRecord]:
-    payload = _read_json(files.metrics_path)
-    metric_a = metric_names[0]
-    metric_b = metric_names[1]
+def _build_trial_record(
+    files: TrialFiles,
+    metric_names: Sequence[str],
+    payload: Dict,
+    command_specs: Sequence[CommandSpec],
+    train_key: str,
+    test_key: str,
+) -> Optional[TrialRecord]:
+    if not isinstance(payload, dict):
+        return None
 
-    train_x = _resolve_metric_value(payload, metric_a, prefix="train")
-    train_y = _resolve_metric_value(payload, metric_b, prefix="train")
-    test_x = _resolve_metric_value(payload, metric_a, prefix="test")
-    test_y = _resolve_metric_value(payload, metric_b, prefix="test")
+    per_command: Dict[str, MetricPair] = {}
+    for spec in command_specs:
+        per_command[spec.key] = _resolve_command_pair(payload, metric_names, spec.prefixes)
 
-    if train_x is None and train_y is None and test_x is None and test_y is None:
+    has_any_metrics = any(
+        (pair[0] is not None or pair[1] is not None) for pair in per_command.values()
+    )
+    if not has_any_metrics:
         return None
 
     classifier, inner_classifier = _extract_classifier_info(files.context_path, files.overrides_path)
@@ -233,9 +483,10 @@ def _build_trial_record(files: TrialFiles, metric_names: Sequence[str]) -> Optio
         number=files.number,
         classifier=classifier,
         inner_classifier=inner_classifier,
-        train=(train_x, train_y),
-        test=(test_x, test_y),
+        train=per_command.get(train_key, (None, None)),
+        test=per_command.get(test_key, (None, None)),
         metrics_path=files.metrics_path,
+        per_command=per_command,
     )
 
 
@@ -280,24 +531,81 @@ def _build_marker_map(inner_labels: Iterable[Optional[str]]) -> Dict[Optional[st
     return markers
 
 
+def _collect_phase_metrics(
+    records: Sequence[TrialRecord],
+    command_key: str,
+) -> List[Tuple[TrialRecord, float, float]]:
+    metrics: List[Tuple[TrialRecord, float, float]] = []
+    for record in records:
+        pair = record.per_command.get(command_key)
+        if not pair:
+            continue
+        if pair[0] is None or pair[1] is None:
+            continue
+        metrics.append((record, pair[0], pair[1]))
+    return metrics
+
+
+def _dominates(
+    lhs: Tuple[float, float],
+    rhs: Tuple[float, float],
+    directions: Sequence[str],
+) -> bool:
+    better_or_equal = True
+    strictly_better = False
+    for idx, direction in enumerate(directions):
+        lv = lhs[idx]
+        rv = rhs[idx]
+        if direction == "maximize":
+            if lv < rv:
+                better_or_equal = False
+                break
+            if lv > rv:
+                strictly_better = True
+        else:  # minimize
+            if lv > rv:
+                better_or_equal = False
+                break
+            if lv < rv:
+                strictly_better = True
+    return better_or_equal and strictly_better
+
+
+def _pareto_front(
+    metrics: Sequence[Tuple[TrialRecord, float, float]],
+    directions: Sequence[str],
+) -> List[Tuple[TrialRecord, float, float]]:
+    front: List[Tuple[TrialRecord, float, float]] = []
+    for item in metrics:
+        candidate = (item[1], item[2])
+        dominated = False
+        for incumbent in list(front):
+            current = (incumbent[1], incumbent[2])
+            if _dominates(current, candidate, directions):
+                dominated = True
+                break
+            if _dominates(candidate, current, directions):
+                front.remove(incumbent)
+        if not dominated:
+            front.append(item)
+    return front
+
+
 def _scatter_points(
     records: Sequence[TrialRecord],
-    phase: str,
+    command_key: str,
+    command_label: str,
     metric_names: Sequence[str],
     colors: Dict[str, str],
     markers: Dict[Optional[str], str],
     out_path: Path,
     annotate: bool = False,
+    title: Optional[str] = None,
 ) -> bool:
-    phase_metrics: List[Tuple[TrialRecord, float, float]] = []
-    for record in records:
-        pair = record.train if phase == "train" else record.test
-        if pair[0] is None or pair[1] is None:
-            continue
-        phase_metrics.append((record, pair[0], pair[1]))
+    phase_metrics = _collect_phase_metrics(records, command_key)
 
     if not phase_metrics:
-        print(f"[WARN] No {phase} metrics available; skipping plot {out_path.name}")
+        print(f"[WARN] No {command_label} metrics available; skipping plot {out_path.name}")
         return False
 
     plt.figure(figsize=(8, 6))
@@ -323,11 +631,18 @@ def _scatter_points(
                 fontsize=8,
             )
 
-    ax.set_xlabel(f"{phase.title()} {metric_names[0]}")
-    ax.set_ylabel(f"{phase.title()} {metric_names[1]}")
-    ax.set_title(f"Optuna trials ({phase} metrics)")
+    ax.set_xlabel(f"{command_label} {metric_names[0]}")
+    ax.set_ylabel(f"{command_label} {metric_names[1]}")
+    default_title = f"Optuna trials ({command_label} metrics)"
+    ax.set_title(title or default_title)
     ax.grid(True, linestyle=":", linewidth=0.6)
 
+    plotted_records = [item[0] for item in phase_metrics]
+    used_color_labels: List[str] = []
+    for record in plotted_records:
+        label = record.classifier
+        if label in colors and label not in used_color_labels:
+            used_color_labels.append(label)
     color_handles = [
         Line2D(
             [0],
@@ -339,8 +654,14 @@ def _scatter_points(
             markeredgecolor="#1f1f1f",
             markersize=8,
         )
-        for label in colors
+        for label in used_color_labels
     ]
+
+    used_marker_labels: List[Optional[str]] = []
+    for record in plotted_records:
+        label = record.inner_classifier
+        if label in markers and label not in used_marker_labels:
+            used_marker_labels.append(label)
     marker_handles = [
         Line2D(
             [0],
@@ -352,7 +673,7 @@ def _scatter_points(
             markeredgecolor="#4a4a4a",
             markersize=8,
         )
-        for label in markers
+        for label in used_marker_labels
     ]
     legend1 = ax.legend(
         handles=color_handles,
@@ -363,13 +684,14 @@ def _scatter_points(
         fontsize=8,
     )
     ax.add_artist(legend1)
-    ax.legend(
-        handles=marker_handles,
-        title="Inner classifier",
-        loc="upper left",
-        bbox_to_anchor=(1.02, 0.45),
-        fontsize=8,
-    )
+    if marker_handles:
+        ax.legend(
+            handles=marker_handles,
+            title="Inner classifier",
+            loc="upper left",
+            bbox_to_anchor=(1.02, 0.45),
+            fontsize=8,
+        )
 
     plt.tight_layout()
     ensure_dir(out_path.parent)
@@ -385,20 +707,27 @@ def _scatter_deltas(
     colors: Dict[str, str],
     markers: Dict[Optional[str], str],
     out_path: Path,
+    command_a_key: str,
+    command_b_key: str,
+    command_a_label: str,
+    command_b_label: str,
     annotate: bool = False,
+    title: Optional[str] = None,
 ) -> bool:
     deltas: List[Tuple[TrialRecord, float, float]] = []
     for record in records:
-        train_pair = record.train
-        test_pair = record.test
-        if None in (*train_pair, *test_pair):
+        pair_a = record.per_command.get(command_a_key)
+        pair_b = record.per_command.get(command_b_key)
+        if not pair_a or not pair_b:
             continue
-        dx = train_pair[0] - test_pair[0]
-        dy = train_pair[1] - test_pair[1]
+        if None in (*pair_a, *pair_b):
+            continue
+        dx = pair_a[0] - pair_b[0]
+        dy = pair_a[1] - pair_b[1]
         deltas.append((record, dx, dy))
 
     if not deltas:
-        print(f"[WARN] No train/test pairs available; skipping plot {out_path.name}")
+        print(f"[WARN] No {command_a_label}/{command_b_label} pairs available; skipping plot {out_path.name}")
         return False
 
     plt.figure(figsize=(8, 6))
@@ -425,11 +754,18 @@ def _scatter_deltas(
 
     ax.axvline(0.0, color="#9c9c9c", linestyle="--", linewidth=1.0)
     ax.axhline(0.0, color="#9c9c9c", linestyle="--", linewidth=1.0)
-    ax.set_xlabel(f"Train - Test {metric_names[0]}")
-    ax.set_ylabel(f"Train - Test {metric_names[1]}")
-    ax.set_title("Optuna trials (train minus test deltas)")
+    axis_label = f"{command_a_label} - {command_b_label}"
+    ax.set_xlabel(f"{axis_label} {metric_names[0]}")
+    ax.set_ylabel(f"{axis_label} {metric_names[1]}")
+    default_title = f"Optuna trials ({axis_label} deltas)"
+    ax.set_title(title or default_title)
     ax.grid(True, linestyle=":", linewidth=0.6)
 
+    used_color_labels: List[str] = []
+    for record, _, _ in deltas:
+        label = record.classifier
+        if label in colors and label not in used_color_labels:
+            used_color_labels.append(label)
     color_handles = [
         Line2D(
             [0],
@@ -441,8 +777,14 @@ def _scatter_deltas(
             markeredgecolor="#1f1f1f",
             markersize=8,
         )
-        for label in colors
+        for label in used_color_labels
     ]
+
+    used_marker_labels: List[Optional[str]] = []
+    for record, _, _ in deltas:
+        label = record.inner_classifier
+        if label in markers and label not in used_marker_labels:
+            used_marker_labels.append(label)
     marker_handles = [
         Line2D(
             [0],
@@ -454,7 +796,7 @@ def _scatter_deltas(
             markeredgecolor="#4a4a4a",
             markersize=8,
         )
-        for label in markers
+        for label in used_marker_labels
     ]
     legend1 = ax.legend(
         handles=color_handles,
@@ -465,13 +807,14 @@ def _scatter_deltas(
         fontsize=8,
     )
     ax.add_artist(legend1)
-    ax.legend(
-        handles=marker_handles,
-        title="Inner classifier",
-        loc="upper left",
-        bbox_to_anchor=(1.02, 0.45),
-        fontsize=8,
-    )
+    if marker_handles:
+        ax.legend(
+            handles=marker_handles,
+            title="Inner classifier",
+            loc="upper left",
+            bbox_to_anchor=(1.02, 0.45),
+            fontsize=8,
+        )
 
     plt.tight_layout()
     ensure_dir(out_path.parent)
@@ -481,17 +824,35 @@ def _scatter_deltas(
     return True
 
 
-def generate_optuna_trial_plots(optuna_dir: str, annotate: bool = False) -> List[Path]:
+def generate_optuna_trial_plots(
+    optuna_dir: str,
+    annotate: bool = False,
+) -> List[Path]:
     optuna_path = Path(optuna_dir).expanduser().resolve()
     if optuna_path.name != "optuna" and (optuna_path / "optuna").is_dir():
         optuna_path = optuna_path / "optuna"
         print(f"[INFO] Using optuna folder: {optuna_path}")
     trial_files = _discover_trial_files(optuna_path)
-    if not trial_files:
+    log_metrics = _parse_log_metrics(optuna_path)
+    if not trial_files and not log_metrics:
         raise RuntimeError(f"No trial metrics found in {optuna_path}")
+    if not trial_files and log_metrics:
+        for number in sorted(log_metrics):
+            trial_dir = optuna_path / f"trial_{number:04d}"
+            trial_files.append(
+                TrialFiles(
+                    number=number,
+                    directory=trial_dir,
+                    metrics_path=None,
+                    context_path=None,
+                    overrides_path=None,
+                )
+            )
 
     summary, summary_present = _load_summary(optuna_path)
-    metric_names = []
+    config_metrics, config_dir_map, fallback_config = _load_config_metrics(optuna_path)
+    payload_cache: Dict[int, Dict] = {}
+    metric_names: List[str] = []
     for raw in summary.get("metric_names", []):
         text = str(raw).strip()
         if not text:
@@ -503,8 +864,17 @@ def generate_optuna_trial_plots(optuna_dir: str, annotate: bool = False) -> List
     if not summary_present:
         print("[WARN] optuna_summary.json missing; treating this as an incomplete run and inferring metrics from finished trials.")
 
+    for name in config_metrics:
+        normalized = _normalize_metric_name(name)
+        if normalized and normalized not in metric_names:
+            metric_names.append(normalized)
+
     if len(metric_names) < 2:
-        inferred = _infer_metric_names_from_trials(trial_files)
+        inferred = _infer_metric_names_from_trials(
+            trial_files,
+            log_metrics,
+            payload_cache,
+        )
         for name in inferred:
             normalized = _normalize_metric_name(name)
             if normalized and normalized not in metric_names:
@@ -522,31 +892,205 @@ def generate_optuna_trial_plots(optuna_dir: str, annotate: bool = False) -> List
 
     metric_names = metric_names[:2]
 
+    command_specs = _load_commands_spec(trial_files, fallback_config) or _default_command_specs()
+
+    def pick_spec(command_type: str) -> Optional[CommandSpec]:
+        for spec in command_specs:
+            if spec.command_type == command_type:
+                return spec
+        return None
+
+    if not command_specs:
+        raise RuntimeError("Unable to determine any commands for plotting")
+
+    train_spec = pick_spec("train") or command_specs[0]
+    test_spec = pick_spec("test")
+    if test_spec is None and len(command_specs) > 1:
+        for candidate in command_specs:
+            if candidate.key != train_spec.key:
+                test_spec = candidate
+                break
+    pareto_source_spec = test_spec or train_spec
+
+    summary_dirs = [
+        dir_name
+        for dir_name in (
+            _normalize_direction(raw) for raw in summary.get("directions", [])
+        )
+        if dir_name
+    ]
+    directions: List[str] = []
+    minimize_hints = {"fpr", "fnr", "fdr", "far", "loss", "error", "cost"}
+    for idx, metric in enumerate(metric_names):
+        if idx < len(summary_dirs):
+            directions.append(summary_dirs[idx])
+            continue
+        config_direction = config_dir_map.get(metric)
+        if config_direction:
+            directions.append(config_direction)
+            continue
+        if metric in minimize_hints:
+            directions.append("minimize")
+        elif DEFAULT_DIRECTIONS:
+            directions.append(DEFAULT_DIRECTIONS[idx % len(DEFAULT_DIRECTIONS)])
+        else:
+            directions.append("maximize")
+
     records: List[TrialRecord] = []
     for files in trial_files:
-        record = _build_trial_record(files, metric_names)
+        payload = _load_trial_payload(files, log_metrics, payload_cache)
+        if payload is None:
+            continue
+        record = _build_trial_record(
+            files,
+            metric_names,
+            payload,
+            command_specs,
+            train_spec.key,
+            test_spec.key if test_spec else train_spec.key,
+        )
         if record:
             records.append(record)
     if not records:
         raise RuntimeError("No usable trial metrics were parsed")
 
     colors = _build_color_map(record.classifier for record in records)
-    markers = _build_marker_map(
-        record.inner_classifier for record in records
-    )
+    markers = _build_marker_map(record.inner_classifier for record in records)
 
+    visuals_dir = optuna_path / "visuals"
+    commands_dir = visuals_dir / "commands"
     outputs: List[Path] = []
-    train_plot = optuna_path / "optuna_trials_training.png"
-    if _scatter_points(records, "train", metric_names, colors, markers, train_plot, annotate=annotate):
-        outputs.append(train_plot)
 
-    test_plot = optuna_path / "optuna_trials_testing.png"
-    if _scatter_points(records, "test", metric_names, colors, markers, test_plot, annotate=annotate):
-        outputs.append(test_plot)
+    for spec in command_specs:
+        command_plot = commands_dir / spec.folder_name / f"{spec.key}_metrics.png"
+        if _scatter_points(
+            records,
+            spec.key,
+            spec.display_name,
+            metric_names,
+            colors,
+            markers,
+            command_plot,
+            annotate=annotate,
+        ):
+            outputs.append(command_plot)
 
-    delta_plot = optuna_path / "optuna_trials_train_test_delta.png"
-    if _scatter_deltas(records, metric_names, colors, markers, delta_plot, annotate=annotate):
-        outputs.append(delta_plot)
+    classifier_dir = visuals_dir / "classifiers"
+    classifier_records: Dict[str, List[TrialRecord]] = {}
+    for record in records:
+        classifier_records.setdefault(record.classifier, []).append(record)
+
+    for classifier_name in sorted(classifier_records):
+        subset = classifier_records[classifier_name]
+        classifier_slug = _slugify(classifier_name)
+        classifier_label = _short_label(classifier_name)
+        for spec in command_specs:
+            classifier_plot = classifier_dir / classifier_slug / f"{spec.key}_metrics.png"
+            if _scatter_points(
+                subset,
+                spec.key,
+                f"{spec.display_name} ({classifier_label})",
+                metric_names,
+                colors,
+                markers,
+                classifier_plot,
+                annotate=annotate,
+            ):
+                outputs.append(classifier_plot)
+
+    delta_outputs_generated = False
+    if test_spec and train_spec.key != test_spec.key:
+        delta_dir = visuals_dir / "deltas"
+        delta_plot = (
+            delta_dir
+            / f"{train_spec.folder_name}_minus_{test_spec.folder_name}_delta.png"
+        )
+        if _scatter_deltas(
+            records,
+            metric_names,
+            colors,
+            markers,
+            delta_plot,
+            command_a_key=train_spec.key,
+            command_b_key=test_spec.key,
+            command_a_label=train_spec.display_name,
+            command_b_label=test_spec.display_name,
+            annotate=annotate,
+        ):
+            outputs.append(delta_plot)
+            delta_outputs_generated = True
+    else:
+        print("[WARN] Skipping delta plot because a complete train/test pair was not detected")
+
+    pareto_key = pareto_source_spec.key
+    pareto_label = pareto_source_spec.display_name
+    pareto_metrics = _collect_phase_metrics(records, pareto_key)
+    pareto_trials: Set[int] = set()
+    if pareto_metrics:
+        front = _pareto_front(pareto_metrics, directions)
+        pareto_trials = {record.number for record, _, _ in front}
+        print(
+            f"[INFO] Identified {len(pareto_trials)} Pareto-optimal trials from {pareto_label} metrics"
+        )
+    else:
+        print(
+            f"[WARN] Unable to compute Pareto front because no {pareto_label} metrics were available"
+        )
+
+    front_records = [record for record in records if record.number in pareto_trials]
+    if front_records:
+        pareto_dir = visuals_dir / "pareto"
+        train_front = pareto_dir / f"{train_spec.folder_name}_pareto.png"
+        if _scatter_points(
+            front_records,
+            train_spec.key,
+            train_spec.display_name,
+            metric_names,
+            colors,
+            markers,
+            train_front,
+            annotate=True,
+            title=f"Pareto front ({train_spec.display_name} metrics)",
+        ):
+            outputs.append(train_front)
+
+        target_spec = pareto_source_spec or train_spec
+        if target_spec.key != train_spec.key:
+            target_front = pareto_dir / f"{target_spec.folder_name}_pareto.png"
+            if _scatter_points(
+                front_records,
+                target_spec.key,
+                target_spec.display_name,
+                metric_names,
+                colors,
+                markers,
+                target_front,
+                annotate=True,
+                title=f"Pareto front ({target_spec.display_name} metrics)",
+            ):
+                outputs.append(target_front)
+
+        if delta_outputs_generated and test_spec:
+            delta_front = (
+                pareto_dir
+                / f"{train_spec.folder_name}_minus_{test_spec.folder_name}_delta_pareto.png"
+            )
+            if _scatter_deltas(
+                front_records,
+                metric_names,
+                colors,
+                markers,
+                delta_front,
+                command_a_key=train_spec.key,
+                command_b_key=test_spec.key,
+                command_a_label=train_spec.display_name,
+                command_b_label=test_spec.display_name,
+                annotate=True,
+                title=f"Pareto front ({train_spec.display_name} minus {test_spec.display_name} deltas)",
+            ):
+                outputs.append(delta_front)
+    else:
+        print("[WARN] No Pareto-optimal trials were identified; skipping Pareto-only plots")
 
     return outputs
 
@@ -567,7 +1111,10 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = _parse_args(argv)
-    generate_optuna_trial_plots(args.optuna_dir, annotate=args.annotate)
+    generate_optuna_trial_plots(
+        args.optuna_dir,
+        annotate=args.annotate,
+    )
     return 0
 
 
