@@ -1,15 +1,22 @@
 
 import itertools
 import json
-from copy import deepcopy
-from pathlib import Path
+import sys
 import time
 import traceback
+from copy import deepcopy
+from pathlib import Path
 
 import optuna
 
-from plot_utils.plot_optuna_trials import generate_optuna_trial_plots
-from optuna_validator import validate_optuna_search_space
+try:  # Prefer package-relative imports when available
+    from .plot_utils.plot_optuna_trials import generate_optuna_trial_plots
+    from .optuna_validator import validate_optuna_search_space
+except ImportError:  # Fallback for standalone execution of run.py
+    SRC_ROOT = Path(__file__).resolve().parent
+    sys.path.insert(0, str(SRC_ROOT))
+    from plot_utils.plot_optuna_trials import generate_optuna_trial_plots  # type: ignore
+    from optuna_validator import validate_optuna_search_space  # type: ignore
 
 
 class OptunaOptimizer:
@@ -169,6 +176,8 @@ class OptunaOptimizer:
         with open(trial_context_path, "w") as f:
             yaml.safe_dump(trial_context, f)
         # Run pipeline (train+val), collect metrics
+        trial_failed = False
+        failure_values = None
         try:
             pipeline = self.pipeline_cls(
                 config,
@@ -177,27 +186,47 @@ class OptunaOptimizer:
                 git_commit=self.git_commit,
             )
             metrics = pipeline.run_optuna_trial(optuna_trial=trial, optuna_dir=str(trial_dir))
+            objective_values = tuple(metrics[m] for m in self.metric_names)
         except Exception as exc:
-            t_fail = time.time()
+            trial_failed = True
             tb = traceback.format_exc()
+            failure_values = self._failed_objective_values()
+            metrics = self._build_failure_metrics(exc, failure_values)
             self._log_optuna(
-                f"Trial {trial.number} FAILED in {t_fail - t0:.1f}s | overrides: {overrides_snapshot} | error: {exc}\n{tb}"
+                f"Trial {trial.number} FAILED after {time.time() - t0:.1f}s | overrides: {overrides_snapshot} | error: {exc}\n{tb}"
             )
-            raise
+            self._log_optuna(
+                f"Trial {trial.number} marked as failed; continuing optimization with fallback metrics {metrics}."
+            )
+            try:
+                trial.set_user_attr("status", "failed")
+                trial.set_user_attr("error", str(exc))
+            except Exception:
+                pass
+            objective_values = tuple(failure_values)
         # Save results
         trial_result_path = trial_dir / "metrics.json"
         with open(trial_result_path, "w") as f:
             json.dump(metrics, f, indent=2)
         t1 = time.time()
-        self._log_optuna(f"Finished trial {trial.number} in {t1-t0:.1f}s | overrides: {overrides_snapshot} | metrics: {metrics}")
+        elapsed = t1 - t0
+        if trial_failed:
+            self._log_optuna(
+                f"Recorded failed trial {trial.number} in {elapsed:.1f}s | overrides: {overrides_snapshot}"
+            )
+        else:
+            self._log_optuna(
+                f"Finished trial {trial.number} in {elapsed:.1f}s | overrides: {overrides_snapshot} | metrics: {metrics}"
+            )
         # Log for summary
         self.trials_log.append({
             "trial": trial.number,
             "classifier_type": config.get("model", {}).get("classifier_type"),
             "overrides": overrides_snapshot,
             "metrics": metrics,
+            "status": "failed" if trial_failed else "success",
         })
-        return tuple(metrics[m] for m in self.metric_names)
+        return objective_values
 
     # -----------------
     # path utilities
@@ -328,6 +357,26 @@ class OptunaOptimizer:
             if isinstance(candidate, dict):
                 resolved_params = candidate
         nested_model["params"] = deepcopy(resolved_params)
+
+    def _failed_objective_values(self):
+        fallback = []
+        total_metrics = len(self.metric_names)
+        for idx in range(total_metrics):
+            direction = self.directions[idx] if idx < len(self.directions) else "maximize"
+            direction_str = str(direction).lower()
+            if direction_str.startswith("min"):
+                fallback.append(1e9)
+            else:
+                fallback.append(-1e9)
+        return fallback
+
+    def _build_failure_metrics(self, exc, fallback_values):
+        metrics = {name: value for name, value in zip(self.metric_names, fallback_values)}
+        metrics.update({
+            "status": "failed",
+            "error": str(exc),
+        })
+        return metrics
 
     def optimize(self):
         self._log_optuna("Creating new study...")

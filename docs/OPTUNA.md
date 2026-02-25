@@ -21,7 +21,11 @@ Optuna writes every artifact into an `optuna/` subfolder inside the generated ex
 - `trial_{n}_config.yaml` — the overrides sampled for a specific trial.
 - `trial_{n}_context.yaml` — the full runtime config after overrides.
 - `trial_{n}/metrics.json` — serialized train/test metrics for the trial, now including full confusion-matrix counts (`train_confusion` and `test_confusion`).
-- `optuna_trials_training.png`, `optuna_trials_testing.png`, `optuna_trials_train_test_delta.png` — scatter plots produced by `src/plot_utils/plot_optuna_trials.py` (details below) that summarize every finished trial.
+- `visuals/commands/<command_slug>/<command_key>_metrics.png` — one scatter plot per configured command (train, test, or custom). Colors track the outer classifier and marker shapes denote nested classifiers, so every command gets a consistent legend.
+- `visuals/classifiers/<classifier_slug>/<command_key>_metrics.png` — the same command-level scatter plots but filtered to a single classifier family, making it easy to compare different command behaviors within one model type without extra folders.
+- `visuals/deltas/<train_slug>_minus_<test_slug>_delta.png` — a single train-minus-test delta chart that only compares the first detected train/test pair (matching the pipeline’s “primary” commands) to prevent a flood of redundant figures.
+- `visuals/pareto/<command_slug>_pareto.png` — Pareto-front-only views for whichever command supplied the metrics (usually test, but the script falls back to train or any other command that produced values). These plots are annotated automatically so you can jump to the winning trial IDs.
+- `visuals/pareto/<train_slug>_minus_<test_slug>_delta_pareto.png` — the same Pareto members in the delta space, only emitted when both sides of the preferred train/test pair exist.
 
 ## Complete Config Example
 The snippet below mirrors `optuna_conf.yaml` in the repo root so you can start from a known-good baseline:
@@ -330,19 +334,21 @@ The default search space wires six classifier families; you can reference the sa
 
 ## Visualizing Trials
 
-After a study finishes the pipeline triggers `src/plot_utils/plot_optuna_trials.generate_optuna_trial_plots(...)` automatically, so the three PNGs listed above appear in the same `optuna/` folder as soon as the study completes. You can re-run or customize the plots manually with either the experiment root or the `optuna/` path itself:
+After a study finishes the pipeline triggers `src/plot_utils/plot_optuna_trials.generate_optuna_trial_plots(...)` automatically, so the PNGs listed above appear in the same `optuna/` folder as soon as the study completes. You can re-run or customize the plots manually with either the experiment root or the `optuna/` path itself:
 
 ```bash
 python src/plot_utils/plot_optuna_trials.py experiments/<experiment_name>
 python src/plot_utils/plot_optuna_trials.py experiments/<experiment_name>/optuna
 ```
 
-Use `--annotate` to stamp the trial numbers next to every point when debugging specific overrides.
+Use `--annotate` to stamp the trial numbers next to every point when debugging specific overrides. The script still emits Pareto-only figures, but it now stores everything under `optuna/visuals/` so plots stay grouped by purpose:
 
-The script reads `optuna_summary.json` to determine the first/second objective (e.g., `f1` vs `fpr`). If the summary is missing—common when a study was interrupted—it falls back to scanning whatever `trial_XXXX/metrics.json` files exist, prints a warning that it is plotting an incomplete run, and infers the metric names automatically. Either way it saves the same three PNGs directly into the `optuna/` folder:
+- `visuals/commands/<command_slug>/<command_key>_metrics.png` — one PNG for every command listed in the experiment config. The slug comes from the command name (for readability) while the key matches the internal identifier (so `train`, `test`, `train2`, etc., are easy to map back to logs).
+- `visuals/classifiers/<classifier_slug>/<command_key>_metrics.png` — the same plots but filtered to a single classifier type. The slug mirrors the classifier path (e.g., `river_forest_arfclassifier`) so you can jump straight to one model family without digging through command subfolders.
+- `visuals/deltas/<train_slug>_minus_<test_slug>_delta.png` — the only delta chart, comparing the first train/test pair the pipeline discovers. This focuses attention on the “primary” commands instead of generating N×M permutations.
+- `visuals/pareto/<command_slug>_pareto.png` — Pareto members plotted inside whichever command supplied the metrics (test preferred, otherwise the first command with usable values). Annotated automatically.
+- `visuals/pareto/<train_slug>_minus_<test_slug>_delta_pareto.png` — Pareto trials projected into the delta space; only written when both train and test metrics exist.
 
-- `optuna_trials_training.png` — training metrics plotted with classifier-specific colors and inner-classifier specific markers.
-- `optuna_trials_testing.png` — testing metrics plotted with the same legend so you can compare generalization directly.
-- `optuna_trials_train_test_delta.png` — signed $(\text{train}-\text{test})$ differences for both objectives, with crosshairs at zero.
+The script reads `optuna_summary.json` to determine the primary/secondary objectives (e.g., `f1` vs `fpr`). If the summary is missing—common when a study was interrupted—it scans every `trial_XXXX` folder and even parses `optuna_trials.log` to reconstruct any metrics that were logged before the crash. Metric directions fall back to the experiment config when the summary is absent, so the Pareto front stays accurate even for partial runs. By the time plotting finishes you’ll see a short log that lists every generated PNG under `optuna/visuals/`, making it easy to navigate the richer output set.
 
 Colors distinguish the outer classifier (e.g., `ARFClassifier` vs `ADWINBoostingClassifier`) and marker shapes represent nested estimators (e.g., river trees inside an ensemble). Pass `--annotate` to label points with their trial numbers if you need to trace back to a specific configuration. Because the script exposes a callable `generate_optuna_trial_plots()` function, it can also be triggered programmatically from the pipeline after `optuna` runs.

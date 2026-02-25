@@ -187,3 +187,40 @@ def test_prepare_classifier_params_resolves_metric(monkeypatch):
     params = {"metric": "accuracy"}
     out = mm.prepare_classifier_params(Dummy, params)
     assert isinstance(out["metric"], Accuracy)
+
+
+def test_prepare_classifier_params_knn_sets_bruteforce(monkeypatch):
+    import types
+
+    neighbors_mod = types.ModuleType("river.neighbors")
+
+    class BruteForce:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    setattr(neighbors_mod, "BruteForce", BruteForce)
+    river_mod = types.ModuleType("river")
+    river_mod.neighbors = neighbors_mod
+    monkeypatch.setitem(sys.modules, "river", river_mod)
+    monkeypatch.setitem(sys.modules, "river.neighbors", neighbors_mod)
+
+    class DummyKNN:
+        __module__ = "river.neighbors.knn_classifier"
+        __name__ = "KNNClassifier"
+
+    params = {}
+    out = mm.prepare_classifier_params(DummyKNN, params)
+    assert "optimizer" in out
+    assert isinstance(out["optimizer"], BruteForce)
+    assert "optimizer" not in params  # original dict untouched
+
+
+def test_prepare_classifier_params_knn_preserves_optimizer():
+    class DummyKNN:
+        __module__ = "river.neighbors.knn_classifier"
+        __name__ = "KNNClassifier"
+
+    sentinel = object()
+    params = {"optimizer": sentinel}
+    out = mm.prepare_classifier_params(DummyKNN, params)
+    assert out["optimizer"] is sentinel
