@@ -1,9 +1,9 @@
 experiment_name: pretrained_eval_only
 
-root: /opt/Datasets/security-datasets-for-testing/
+root: ..
 seed: 1111
 validation_split: 0.1
-batch_size_train: 500
+batch_size_train: 1000
 batch_size_test: 1000
 
 classes: ["Benign", "Malicious"]
