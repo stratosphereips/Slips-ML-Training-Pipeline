@@ -1,0 +1,104 @@
+experiment_name: pretrained_eval_only
+
+root: /opt/Datasets/security-datasets-for-testing/
+seed: 1111
+validation_split: 0.1
+batch_size_train: 500
+batch_size_test: 1000
+
+classes: ["Benign", "Malicious"]
+
+plotting_pths:
+  training: "./src/plot_utils/plot_train_perf.py"
+  testing: "./src/plot_utils/plot_test_perf.py"
+
+paths:
+  experiment_dir: ./experiments
+
+
+dataset_loader:
+  data_subdir: data
+  persist_cache_threshold: 20000
+  cache_dir: ./cache
+  labeled_filenames:
+    - conn.log.labeled
+    - labeled-conn.log
+    - conn.log
+  file_encoding: utf-8
+  file_errors: ignore
+  shuffle_per_epoch: false
+
+features:
+  default_label: Benign
+  protocols_to_discard:
+    - arp
+    - ARP
+    - icmp
+    - igmp
+    - ipv6-icmp
+    - ""
+
+preprocessing:
+  steps:
+    - name: "scaler"
+      type: "StandardScaler"
+      params: {}
+    - name: "pca"
+      type: "IncrementalPCA"
+      params:
+        n_components: 11
+  save_steps: false
+  step_filename_template: "{name}.bin"
+  load_steps:
+    - name: "scaler"
+      path: "./experiments/optuna_real_run_long_5/optuna/trial_0019/scaler.bin"
+    - name: "pca"
+      path: "./experiments/optuna_real_run_long_5/optuna/trial_0019/pca.bin"
+
+model:
+  wrapper: RiverClassifierWrapper
+  load_path: "./experiments/optuna_real_run_long_5/optuna/trial_0019/model.bin"
+
+commands:
+  - name: "test_all"
+    command: "test"
+    mixer:
+      type: "sequence"
+      datasets:
+        - "001"
+        - "008"
+        - "009"
+        - "010"
+        - "011"
+        - "012"
+        - "013"
+        - "014"
+        - "015"
+        - "016"
+        - "017"
+        - "018"
+        - "020"
+        - "021"
+        - "025"
+        - "026"
+        - "030"
+        - "031"
+        - "035"
+        - "036"
+        - "037"
+
+  - name: "test_unseen"
+    command: "test"
+    mixer:
+      type: "sequence"
+      datasets:
+        - "018"
+        - "020"
+        - "021"
+        - "025"
+        - "026"
+        - "030"
+        - "031"
+        - "035"
+        - "036"
+        - "037"
