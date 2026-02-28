@@ -1,23 +1,20 @@
-FROM ubuntu:22.04
+FROM python:3.13-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        python3 \
-        python3-pip \
-        python3-venv \
         git \
         curl \
         ca-certificates \
         build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /workspace
+WORKDIR /workspace/pipeline_ml_training_for_SLIPS
 
-COPY requirements.txt ./
+COPY . /workspace/pipeline_ml_training_for_SLIPS
 
-RUN python3 -m venv /opt/venv \
+RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir --upgrade pip \
     && /opt/venv/bin/pip install --no-cache-dir -r requirements.txt
 

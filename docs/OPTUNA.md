@@ -5,13 +5,13 @@ This guide expands on the short README summary and documents every detail requir
 ## How to Run
 - **Normal mode** (no search, single experiment):
   ```bash
-  python run.py default_config.yaml
+  python run.py configs/default_config.yaml
   ```
 - **Optuna mode** (multi-objective search):
   ```bash
-  python run.py optuna_conf.yaml --optuna
+  python run.py configs/optuna_conf.yaml --optuna
   ```
-  - `optuna_conf.yaml` is a complete example you can copy and adjust.
+  - `configs/optuna_conf.yaml` is a complete example you can copy and adjust.
   - Use `--optuna` with any config that includes an `optuna` section; omit the flag to run that config verbatim.
 
 ## Study Outputs
@@ -40,7 +40,7 @@ python src/plot_utils/plot_optuna_trials.py experiments/<experiment_name>/optuna
 - Options: `--annotate` overlays trial numbers on points; omit it for cleaner charts.
 
 ## Complete Config Example
-The snippet below mirrors `optuna_conf.yaml` in the repo root so you can start from a known-good baseline:
+The snippet below mirrors `configs/optuna_conf.yaml` so you can start from a known-good baseline:
 ```yaml
 ---
 experiment_name: optuna_example
