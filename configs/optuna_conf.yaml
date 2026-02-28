@@ -1,6 +1,6 @@
 ---
-experiment_name: optuna_real_run_long
-root: /opt/Datasets/security-datasets-for-testing/
+experiment_name: example_optuna_experiment
+root:
 seed: 1111
 validation_split: 0.1
 batch_size_train: 1000
@@ -45,7 +45,7 @@ preprocessing:
     - name: "pca"
       type: "IncrementalPCA"
       params:
-        n_components: 7
+        n_components: 11
   save_steps: true
   step_filename_template: "{name}.bin"
 
@@ -98,13 +98,29 @@ commands:
 # if --optuna is set, some defaults will be overwritten.
 # test command at the end is fixed and reused
 
+  - name: "test_unseen"
+    command: "test"
+    mixer:
+      type: "sequence"
+      datasets:
+        - "018"
+        - "020"
+        - "021"
+        - "025"
+        - "026"
+        - "030"
+        - "031"
+        - "035"
+        - "036"
+        - "037"
+
 optuna:
-  n_jobs: 16
+  n_jobs: 8
   enabled: true
   pruner:
     type: median
     n_warmup_steps: 3
-  n_trials: 2048
+  n_trials: 512
   metric:
     - "f1"
     - "fpr"
@@ -118,7 +134,7 @@ optuna:
         params:
         n_components:
           type: int
-          low: 3
+          low: 1
           high: 11
     model:
       classifier_type:
@@ -212,32 +228,21 @@ optuna:
           alpha:
             type: float
             low: 0.1
-            high: 0.99
+            high: 0.9999
           B:
             type: float
             low: 0.5
-            high: 2.0
+            high: 4.0
           C:
             type: float
             low: 0.5
-            high: 2.0
+            high: 4.0
         river.linear_model.PAClassifier: &PA_PARAM_SPECS
           C:
             type: float
             low: 0.01
             high: 10.0
             log: true
-          mode:
-            type: categorical
-            choices:
-              - 0
-              - 1
-              - 2
-          learn_intercept:
-            type: categorical
-            choices:
-              - true
-              - false
         river.ensemble.ADWINBoostingClassifier:
           n_models:
             type: int
@@ -335,16 +340,12 @@ optuna:
           n_neighbors:
             type: int
             low: 1
-            high: 100
+            high: 10000
           weighted:
             type: categorical
             choices:
               - true
               - false
-          cleanup_every:
-            type: int
-            low: 0
-            high: 500
           softmax:
             type: categorical
             choices:
@@ -362,7 +363,7 @@ optuna:
           datasets:
             type: categorical
             multiple: true
-            min: 3
+            min: 1
             choices:
               - "001"
               - "008"
