@@ -9,6 +9,9 @@ import argparse
 import subprocess
 from datetime import datetime
 
+REPO_ROOT = Path(__file__).resolve().parent
+DEFAULT_CONFIG_PATH = REPO_ROOT / "configs" / "default_config.yaml"
+
 # Insert src/ at front of sys.path so modules inside it can use relative imports
 SRC = Path(__file__).resolve().parent / "src"
 sys.path.insert(0, str(SRC))
@@ -59,7 +62,7 @@ def _has_tunable_params(search_space) -> bool:
     return any(_spec_has_params(spec) for spec in search_space.values())
 
 
-def main(config_path: str = "./default_config.yaml", optuna_mode: bool = False):
+def main(config_path: str = str(DEFAULT_CONFIG_PATH), optuna_mode: bool = False):
     """
     Initialize and run the pipeline using the specified config file.
     Returns 0 on success, 1 on failure.
@@ -225,7 +228,7 @@ def main(config_path: str = "./default_config.yaml", optuna_mode: bool = False):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run the ML pipeline or Optuna tuner.")
-    parser.add_argument("config", nargs="?", default="./default_config.yaml", help="Path to config file.")
+    parser.add_argument("config", nargs="?", default=str(DEFAULT_CONFIG_PATH), help="Path to config file.")
     parser.add_argument("--optuna", action="store_true", help="Enable Optuna hyperparameter search mode.")
     args = parser.parse_args()
     sys.exit(main(args.config, optuna_mode=args.optuna))

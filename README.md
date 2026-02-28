@@ -1,11 +1,30 @@
 
 ## What this is and how to use?
 This repo contains a supplemntary ML pipeline for training cybersecurity models, that are to be used in SLIPS project, maintained by Stratosphere lab. The pipeline is separated from SLIPS, but tries to keep the models fully compatible /loadable in SLIPS ML modules.
-- How to run:
+
+### How to run (native)
+- Install deps once (inside a venv recommended):
 ```bash
-cd /path/to/this/repo
-python run.py ./path/to/config.yaml [--optuna]
+pip install -r requirements.txt
 ```
+- Run the pipeline with a config from the new configs/ folder:
+```bash
+python run.py configs/default_config.yaml
+python run.py configs/optuna_conf.yaml --optuna   # Optuna search
+```
+
+### How to run (Docker)
+- Build the image (Python 3.13, project baked in):
+```bash
+docker build -t slips-pipeline:latest .
+```
+- Use docker-compose (memory/swap limits, only experiments mounted):
+```bash
+docker compose run --rm pipeline python run.py configs/default_config.yaml
+docker compose run --rm pipeline python run.py configs/optuna_conf.yaml --optuna
+```
+- Resource defaults from [docker-compose.yml](docker-compose.yml): mem_limit 12g, memswap_limit 16g, mem_swappiness 10, cpus 4. Adjust there for different caps.
+- Artifacts land under the mounted experiments folder on the host: [experiments](experiments).
 
 ## Architecture
 
@@ -262,7 +281,7 @@ SLIPS (Stratosphere Linux IPS) is a behavioral machine-learning based intrusion 
 
 - Enable Optuna with `python run.py <config> --optuna`; the optimizer samples hyperparameters from the nested `optuna.hyperparameters` tree and spins up full train/validation trials.
 - Each study writes logs, configs, and metrics to `experiments/<experiment_name>/optuna/`, so you can inspect trial configs and pick the best performer later.
-- The provided `optuna_conf.yaml` includes a ready-to-run experiment and demonstrates how classifier/mixer comparisons are expressed; copy it as a starting point.
+- The provided `configs/optuna_conf.yaml` includes a ready-to-run experiment and demonstrates how classifier/mixer comparisons are expressed; copy it as a starting point.
 - The search-space definition is validated before any trials start: unknown keys, missing bounds, or mismatched `when` paths raise `OptunaConfigError` with a pointer to the broken section, keeping malformed configs out of the runtime.
 - River classifiers can reference metrics by name (`"accuracy"`, `"f1"`, `"kappa"`, etc.)—the pipeline resolves these strings to real `river.metrics` instances and aborts immediately if a metric cannot be found.
 - Classifier instantiation now fails fast with clear diagnostics; unsupported parameters are stripped (with a warning) and any constructor error stops the run instead of silently producing a `None` classifier.

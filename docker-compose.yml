@@ -1,0 +1,21 @@
+version: "3.8"
+
+services:
+  pipeline:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: slips-pipeline:latest
+    container_name: slips-pipeline
+    mem_limit: "12g"          # RAM cap
+    memswap_limit: "16g"      # RAM + swap cap
+    mem_swappiness: 10        # lower -> prefer RAM over swap
+    oom_kill_disable: false
+    cpus: "4"              # uncomment to cap CPUs
+    volumes:
+      # Mount only experiment artifacts into the container
+      - ./experiments:/workspace/pipeline_ml_training_for_SLIPS/experiments
+    working_dir: /workspace/pipeline_ml_training_for_SLIPS
+    tty: true
+    stdin_open: true
+    command: bash
