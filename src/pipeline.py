@@ -148,6 +148,14 @@ class BuildManager:
         self.preprocessor = None
         self.classifier_wrapper = None
 
+    def _resolve_artifact_path(self, raw_path: str) -> Path:
+        path = Path(raw_path).expanduser()
+        if path.is_absolute():
+            return path
+        # Keep relative paths relative to the current working directory only
+        # so user-provided locations are not rewritten under the experiment folder.
+        return (Path.cwd() / path).resolve()
+
     def build_loaders(self):
         self.exp.log_event("Building dataset loaders...")
         ds = self.cfg_reader.get_dataset_loader_params()
@@ -178,16 +186,21 @@ class BuildManager:
             base_models_dir=str(self.exp.preprocessing_dir),
             step_filename_template=save_opts.get("step_filename_template", "{name}.bin"),
         )
+        preprocessing_cfg = self.cfg_reader.load().get("preprocessing") or {}
         for step in self.cfg_reader.get_preprocessing_steps():
             Cls = get_transformer_class(step["type"])
             prep.add_step(step.get("name"), Cls(**(step.get("params") or {})))
 
-        load_from = (self.cfg_reader.load().get("preprocessing") or {}).get("load_from")
-        if load_from:
-            path = Path(load_from)
-            if not path.is_absolute():
-                path = self.exp.expdir / path
-            prep.load(base_path=str(path))
+        load_steps_cfg = preprocessing_cfg.get("load_steps") or []
+        if load_steps_cfg:
+            step_paths = {}
+            for entry in load_steps_cfg:
+                name = entry.get("name")
+                path = entry.get("path")
+                if not name or not path:
+                    raise ValueError("Each preprocessing load step requires 'name' and 'path'")
+                step_paths[name] = str(self._resolve_artifact_path(path))
+            prep.load(step_paths)
         self.preprocessor = prep
         return self.preprocessor
 
@@ -221,11 +234,13 @@ class BuildManager:
 
         Wrapper = get_wrapper_class(spec.get("wrapper", "SKLearnClassifierWrapper"))
 
-        load_from = spec.get("load_from")
-        load_name = spec.get("load_name", spec.get("save_name", "classifier.bin"))
+        load_path = spec.get("load_path")
 
         classifier_obj = None
-        if cls_type:
+        if load_path:
+            # We will load the pickled classifier directly; no need to instantiate.
+            classifier_obj = None
+        elif cls_type:
             Cls = get_classifier_class(cls_type)
 
             seed = int(self.cfg_reader.get_random_seed())
@@ -252,6 +267,8 @@ class BuildManager:
                 raise RuntimeError(
                     f"Failed to instantiate classifier '{cls_type}' with parameters {params}: {e}"
                 ) from e
+        else:
+            raise ValueError("Classifier type must be set when no load_path is provided")
 
         wrapper = Wrapper(
             classifier_obj,
@@ -259,11 +276,9 @@ class BuildManager:
             classes=self.cfg_reader.get_classes(),
         )
 
-        if load_from:
-            path = Path(load_from)
-            if not path.is_absolute():
-                path = self.exp.expdir / path
-            wrapper.load_classifier(str(path), name=load_name)
+        if load_path:
+            path = self._resolve_artifact_path(load_path)
+            wrapper.load_classifier(str(path))
 
         self.classifier_wrapper = wrapper
         return self.classifier_wrapper
@@ -473,10 +488,20 @@ class PipelineRunner:
         self.exp.set_run_label(run_label)
         self.exp.set_git_commit(git_commit)
         self.exp.log_event(f"Initialized pipeline with config source: {config_path_or_dir}")
+        # In Optuna mode we rebuild fresh components per trial; defer building to avoid a duplicate pass.
+        self._built = False
+        if not self.optuna_mode:
+            self._build_components()
+
+    def _build_components(self):
+        if self._built:
+            return
         bm = BuildManager(self.cfg_reader, self.exp)
         self.loaders, self.feature_extractor, self.preprocessor, self.classifier_wrapper = bm.build_all()
+        self._built = True
 
     def run(self):
+        self._build_components()
         executor = CommandExecutor(
             self.cfg_reader,
             self.exp,
@@ -511,8 +536,8 @@ class PipelineRunner:
         train_cmd = train_cmds[0]
         self.exp.prepare_dirs()
         self.exp.validate_plotting_scripts()
-        bm = BuildManager(self.cfg_reader, self.exp)
-        self.loaders, self.feature_extractor, self.preprocessor, self.classifier_wrapper = bm.build_all()
+        # Build once per trial (Optuna runner is instantiated per trial).
+        self._build_components()
         executor = CommandExecutor(
             self.cfg_reader,
             self.exp,
@@ -547,19 +572,14 @@ class PipelineRunner:
             "objective_source": "train",
         })
 
-        test_counts = None
         test_cmds = [c for c in commands if c.get("command") == "test"]
-        if test_cmds:
-            test_cmd = test_cmds[0]
+        extra_command_metrics = {}
+        for idx_cmd, test_cmd in enumerate(test_cmds):
             test_idx = commands.index(test_cmd)
             executor._ensure_command_paths(test_cmd)
             test_counts = {"TP": 0, "FP": 0, "FN": 0, "TN": 0}
             executor._run_test(test_idx, test_cmd, test_metrics=test_counts)
-            metrics["test_command"] = test_cmd.get("name")
-            metrics["test_datasets"] = self._extract_dataset_list(test_cmd)
-            metrics["test_confusion"] = {k: int(v) for k, v in test_counts.items()}
 
-        if test_counts is not None:
             test_total = sum(test_counts.values())
             if test_total == 0:
                 test_f1 = 0.0
@@ -568,13 +588,33 @@ class PipelineRunner:
                 test_metrics_bin = compute_binary_metrics(test_counts)
                 test_f1 = test_metrics_bin.get("f1", 0.0)
                 test_fpr = test_metrics_bin.get("fpr", 0.0)
-            metrics.update({
-                "test_f1": test_f1,
-                "test_fpr": test_fpr,
+
+            cmd_name = test_cmd.get("name") or f"test_cmd_{idx_cmd}"
+            datasets = self._extract_dataset_list(test_cmd)
+            cmd_metrics = {
+                "command": cmd_name,
+                "datasets": datasets,
                 "f1": test_f1,
                 "fpr": test_fpr,
-                "objective_source": "test",
-            })
+                "confusion": {k: int(v) for k, v in test_counts.items()},
+            }
+
+            if idx_cmd == 0:
+                metrics["test_command"] = cmd_name
+                metrics["test_datasets"] = datasets
+                metrics["test_confusion"] = cmd_metrics["confusion"]
+                metrics.update({
+                    "test_f1": test_f1,
+                    "test_fpr": test_fpr,
+                    "f1": test_f1,
+                    "fpr": test_fpr,
+                    "objective_source": "test",
+                })
+            else:
+                extra_command_metrics[cmd_name] = cmd_metrics
+
+        if extra_command_metrics:
+            metrics["command_metrics"] = extra_command_metrics
 
         if optuna_dir is not None:
             trial_dir = Path(optuna_dir)

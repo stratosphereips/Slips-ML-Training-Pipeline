@@ -131,7 +131,8 @@ You can profile the pipeline to find performance bottlenecks using Python's buil
 ---
 
 ##  Code Testing
-Run unit tests:
+- Run the full suite locally with `pytest`.
+- CI runs the same tests plus lint/hooks via pre-commit on every push/PR, so keep your local environment aligned (see Development below).
 
 ```bash
 pytest
@@ -191,36 +192,37 @@ preprocessor.add_step("scaler", StandardScaler())
 
 ## Loading saved models & preprocessing
 
-The pipeline can reuse preprocessing steps and trained models from disk via configuration. This is useful for testing, fine-tuning, or continuing training from a previous run.
+The pipeline can reuse preprocessing steps and trained models entirely through configuration—handy for running test-only configs or resuming experiments.
 
 **Loading preprocessing steps**
-* Use preprocessing.load_from to point to a directory containing saved preprocessing artifacts (*.bin).
-* Absolute paths are used as-is.
-* Relative paths are resolved relative to the experiment root (experiments/<experiment_name>).
 
+Provide explicit file paths for each saved transformer via `preprocessing.load_steps`:
 
 ```yaml
 preprocessing:
-  load_from: output/preprocessing
+  steps:
+    - name: scaler
+      type: StandardScaler
+      params: {}
+  load_steps:
+    - name: scaler
+      path: /path/to/scaler.bin
 ```
 
-At startup, the pipeline calls PreprocessingWrapper.load(...) and expects one file per preprocessing step, named using the configured filename template (default: {name}.bin).
-* Loading a trained model
-* Use model.load_from to load a previously trained classifier from disk.
-* The directory must contain a serialized classifier binary.
-* The default filename is classifier.bin and can be overridden via model.load_name.
+Each entry must include the step `name` (matching the configured step) and a `path` to the corresponding `.bin`. The pipeline loads every transformer directly from these files—no directory layout required.
 
+**Loading a trained model**
+
+Point `model.load_path` at the serialized classifier binary:
 
 ```yaml
 model:
-  load_from: output/models
-  load_name: classifier.bin
+  wrapper: SklearnClassifierWrapper
+  classifier_type: SGDClassifier
+  load_path: /path/to/classifier.bin
 ```
 
-During initialization, the pipeline:
-* builds the classifier wrapper
-* loads the classifier from the specified directory
-* uses it for subsequent training or testing commands
+At startup, the classifier wrapper reads that file and reuses it for all commands. This replaces the older directory + filename scheme and keeps evaluation configs concise.
 
 ----
 

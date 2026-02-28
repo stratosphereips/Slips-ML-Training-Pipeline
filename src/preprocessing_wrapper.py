@@ -102,21 +102,19 @@ class PreprocessingWrapper:
                 data = pickle.dumps(transformer)
                 f.write(data)
 
-    def load(self, base_path=None):
-        if base_path is None:
-            base_path = (
-                self.base_models_dir / self.experiment_name / "preprocessing"
-            )
-        else:
-            base_path = Path(base_path)
-        if not base_path.exists():
-            raise FileNotFoundError(
-                f"Preprocessing directory {base_path} does not exist."
-            )
-        for name, transformer in self.steps:
-            filename = self.step_filename_template.format(name=name)
-            model_path = base_path / filename
-            if not model_path.exists():
+    def load(self, step_paths):
+        """Load transformers from explicitly provided file paths."""
+
+        if not step_paths:
+            raise ValueError("step_paths must be provided to load preprocessing steps")
+
+        for name, _ in self.steps:
+            if name not in step_paths:
+                raise FileNotFoundError(
+                    f"No load path provided for preprocessing step '{name}'"
+                )
+            model_path = Path(step_paths[name]).expanduser()
+            if not model_path.is_file():
                 raise FileNotFoundError(
                     f"Preprocessing step {name} not found at {model_path}"
                 )
