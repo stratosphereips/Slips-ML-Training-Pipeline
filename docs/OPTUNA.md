@@ -20,12 +20,24 @@ Optuna writes every artifact into an `optuna/` subfolder inside the generated ex
 - `optuna_summary.json` — best trials, metric names, and study metadata.
 - `trial_{n}_config.yaml` — the overrides sampled for a specific trial.
 - `trial_{n}_context.yaml` — the full runtime config after overrides.
-- `trial_{n}/metrics.json` — serialized train/test metrics for the trial, now including full confusion-matrix counts (`train_confusion` and `test_confusion`).
+- `trial_{n}/metrics.json` — serialized train/test metrics for the trial, now including full confusion-matrix counts (`train_confusion` and `test_confusion`). When multiple `test` commands run (e.g., `test_all` followed by `test_unseen`), the primary command still drives the objective fields, while every additional command appears under a new `command_metrics` map that records its `f1`, `fpr`, dataset list, and confusion counts.
 - `visuals/commands/<command_slug>/<command_key>_metrics.png` — one scatter plot per configured command (train, test, or custom). Colors track the outer classifier and marker shapes denote nested classifiers, so every command gets a consistent legend.
 - `visuals/classifiers/<classifier_slug>/<command_key>_metrics.png` — the same command-level scatter plots but filtered to a single classifier family, making it easy to compare different command behaviors within one model type without extra folders.
 - `visuals/deltas/<train_slug>_minus_<test_slug>_delta.png` — a single train-minus-test delta chart that only compares the first detected train/test pair (matching the pipeline’s “primary” commands) to prevent a flood of redundant figures.
 - `visuals/pareto/<command_slug>_pareto.png` — Pareto-front-only views for whichever command supplied the metrics (usually test, but the script falls back to train or any other command that produced values). These plots are annotated automatically so you can jump to the winning trial IDs.
 - `visuals/pareto/<train_slug>_minus_<test_slug>_delta_pareto.png` — the same Pareto members in the delta space, only emitted when both sides of the preferred train/test pair exist.
+
+## Plotting trials manually
+
+The plotting utility lives at `src/plot_utils/plot_optuna_trials.py`. You can regenerate all trial visuals at any time (e.g., after pruning failed trials) by pointing it to the `optuna/` folder:
+
+```bash
+python src/plot_utils/plot_optuna_trials.py experiments/<experiment_name>/optuna --annotate
+```
+
+- Input: an Optuna run directory containing `trial_*/metrics.json` and (optionally) `optuna_summary.json`.
+- Output: scatter plots under `optuna/visuals/` for every command, per-classifier views, deltas for the primary train/test pair, and Pareto-only plots. Failed trials (status=failed) are skipped automatically.
+- Options: `--annotate` overlays trial numbers on points; omit it for cleaner charts.
 
 ## Complete Config Example
 The snippet below mirrors `optuna_conf.yaml` in the repo root so you can start from a known-good baseline:
@@ -329,7 +341,7 @@ The default search space wires six classifier families; you can reference the sa
 - Validation splits, dataset resolving, and command execution follow the same code paths as normal runs, so any config that works without Optuna will work with it as long as the `optuna` section is well-formed.
 - Metric names entered as strings (e.g., `"f1"`, `"kappa"`) are turned into real `river.metrics` objects automatically before the classifier is created; typos will now fail fast.
 - The `optuna.pruner` block is honored directly—set `type` to `median`, `nop`, `successive_halving`, or `hyperband` and pass any constructor kwargs alongside it.
-- When a `test` command exists, every trial runs it immediately after training. The resulting `test_f1`/`test_fpr` become the Optuna objectives (`f1`, `fpr`), while the train metrics are reported separately. Trial logs also capture which command names ran and which dataset lists were applied.
+- When a `test` command exists, every trial runs it immediately after training. The resulting `test_f1`/`test_fpr` become the Optuna objectives (`f1`, `fpr`), while the train metrics are reported separately. Additional `test` commands (like "totally unseen" phases) are executed right after the primary test and their metrics land under `command_metrics` so you can compare secondary phases without changing the objective definition. Trial logs also capture which command names ran and which dataset lists were applied.
 - When in doubt, diff your current config against this document’s example and make sure each new spec mirrors the runtime structure.
 
 ## Visualizing Trials

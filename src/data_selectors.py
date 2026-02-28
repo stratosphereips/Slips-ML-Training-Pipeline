@@ -8,7 +8,7 @@ requested strategy.
 """
 
 from __future__ import annotations
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
@@ -116,6 +116,7 @@ class BaseMixer:
         self.batch_size: Optional[int] = None
         self.mix_plan: List[Dict[str, Any]] = []
         self.processed_dfs: Dict[str, Any] = {}
+        self._orders: Dict[str, Optional[np.ndarray]] = {}
         self._epoch_seen = 0
 
     # ------------------------------------------------------------------
@@ -128,13 +129,16 @@ class BaseMixer:
         self.mix_plan = []
         self._epoch_seen = 0
         self.processed_dfs = {}
+        self._orders = {}
 
         for key, data in self.loaders.items():
             if data is None:
                 data = self._empty_frame()
+            order = None
             if self.shuffle_per_epoch and is_dataframe(data) and batch_len(data) > 1:
-                data = self._shuffle_dataframe(data)
+                order = self.rng.permutation(len(data))
             self.processed_dfs[key] = data
+            self._orders[key] = order
 
     def next_batch(self) -> Tuple[Any, Any]:  # pragma: no cover - implemented by subclasses
         raise NotImplementedError
@@ -161,7 +165,7 @@ class BaseMixer:
         if data is None:
             return self._empty_frame()
         if is_dataframe(data):
-            return data.reset_index(drop=True)
+            return data
         if pd is None:
             return data
         try:
@@ -248,7 +252,12 @@ class BaseMixer:
         if start_offset >= total:
             return None, start_offset
         end = min(start_offset + count, total)
-        chunk = slice_batch(data, start_offset, end)
+        order = self._orders.get(dataset_key)
+        if is_dataframe(data) and order is not None:
+            sel = order[start_offset:end]
+            chunk = data.iloc[sel]
+        else:
+            chunk = slice_batch(data, start_offset, end)
         if chunk is None or batch_len(chunk) == 0:
             return None, end
         return chunk, end
@@ -322,10 +331,6 @@ class RandomBatchesMixer(BaseMixer):
     def reset_epoch(self, batch_size: int, epoch_idx: int = 0) -> None:
         super().reset_epoch(batch_size, epoch_idx)
         self._offsets = {k: 0 for k in self.datasets}
-        for key in self.datasets:
-            data = self.processed_dfs.get(key)
-            if is_dataframe(data) and batch_len(data) > 1:
-                self.processed_dfs[key] = self._shuffle_dataframe(data)
 
     def next_batch(self) -> Tuple[Any, Any]:
         if self.batch_size is None:
@@ -400,7 +405,7 @@ class BalancedByLabelMixer(BaseMixer):
 
         self.labels: List[str] = []
         self.balance_map: Dict[str, float] = {}
-        self._label_tables: Dict[str, pd.DataFrame] = {}
+        self._label_indices: Dict[str, List[tuple]] = {}
         self._label_offsets: Dict[str, int] = {}
 
     def reset_epoch(self, batch_size: int, epoch_idx: int = 0) -> None:
@@ -410,42 +415,53 @@ class BalancedByLabelMixer(BaseMixer):
     def _build_label_state(self) -> None:
         self.labels = []
         self.balance_map = {}
-        self._label_tables = {}
+        self._label_indices = {}
         self._label_offsets = {}
 
-        dfs = list(self._iter_dataset_frames())
+        for key in self.datasets:
+            frame = self.processed_dfs.get(key)
+            if frame is None or not is_dataframe(frame) or frame.empty:
+                continue
+            if "label" not in frame.columns:
+                continue
+            order = self._orders.get(key)
+            if order is None:
+                idx_iter = list(range(len(frame)))
+                if self.shuffle_within_dataset and len(frame) > 1:
+                    idx_iter = self.rng.permutation(len(frame)).tolist()
+            else:
+                idx_iter = order.tolist()
+            labels_series = frame["label"].reset_index(drop=True)
+            for idx in idx_iter:
+                try:
+                    lbl = labels_series.iat[idx]
+                except Exception:
+                    continue
+                if pd.isna(lbl):
+                    continue
+                bucket = self._label_indices.setdefault(lbl, [])
+                bucket.append((key, idx))
 
-        if not dfs:
+        if not self._label_indices:
             return
-        full_df = pd.concat(dfs, ignore_index=True)
-        if "label" not in full_df.columns or full_df.empty:
-            return
-        if self.shuffle_full_table and len(full_df) > 1:
-            full_df = self._shuffle_dataframe(full_df)
 
         if self.provided_labels:
             labels = [lab for lab in list(self.provided_labels) if lab is not None]
         else:
-            labels = full_df["label"].dropna().unique().tolist()
-            labels.sort()
+            labels = sorted(self._label_indices.keys())
         self.labels = labels
-        for label in self.labels:
-            subset = full_df[full_df["label"] == label].reset_index(drop=True)
-            self._label_tables[label] = subset
-            self._label_offsets[label] = 0
-        self.balance_map = self._parse_balance_spec(self.balance_spec, self.labels)
 
-    def _iter_dataset_frames(self) -> Iterable[pd.DataFrame]:
-        for key in self.datasets:
-            data = self.processed_dfs.get(key)
-            if data is None:
-                continue
-            frame = data if is_dataframe(data) else self._ensure_dataframe(data)
-            if frame is None or frame.empty:
-                continue
-            if self.shuffle_within_dataset and batch_len(frame) > 1:
-                frame = self._shuffle_dataframe(frame)
-            yield frame.reset_index(drop=True)
+        # optional shuffle across combined indices per label
+        if self.shuffle_full_table:
+            for lbl in self.labels:
+                seq = self._label_indices.get(lbl, [])
+                if len(seq) > 1:
+                    self.rng.shuffle(seq)
+
+        for label in self.labels:
+            self._label_offsets[label] = 0
+
+        self.balance_map = self._parse_balance_spec(self.balance_spec, self.labels)
 
     @staticmethod
     def _parse_balance_spec(spec_value: Any, labels: Sequence[str]) -> Dict[str, float]:
@@ -476,29 +492,43 @@ class BalancedByLabelMixer(BaseMixer):
         return _allocate_from_fractions(fractions, int(self.batch_size or 0))
 
     def _take_for_label(self, label: str, need: int, allow_resample: bool) -> Tuple[Optional[pd.DataFrame], int, int]:
-        table = self._label_tables.get(label)
-        if table is None:
+        indices = self._label_indices.get(label)
+        if not indices:
             return None, 0, 0
         start = self._label_offsets.get(label, 0)
-        available = len(table) - start
+        available = len(indices) - start
         take = min(need, max(0, available))
-        parts: List[pd.DataFrame] = []
-        fresh = 0
-        resampled = 0
-        if take > 0:
-            parts.append(table.iloc[start:start + take].reset_index(drop=True))
-            fresh = take
-            self._label_offsets[label] = start + take
-        missing = need - fresh
+
+        selected = indices[start:start + take]
+        self._label_offsets[label] = start + take
+
+        missing = need - take
         if missing > 0:
-            if not allow_resample or len(table) == 0:
-                return None, fresh, resampled
-            sample_idx = self.rng.choice(len(table), size=missing, replace=True)
-            parts.append(table.iloc[sample_idx].reset_index(drop=True))
-            resampled = missing
+            if not allow_resample or len(indices) == 0:
+                return None, take, 0
+            sampled_idx = self.rng.choice(len(indices), size=missing, replace=True)
+            for idx in sampled_idx.tolist():
+                selected.append(indices[idx])
+
+        if not selected:
+            return None, take, 0
+
+        # gather rows grouped by dataset to minimize slicing overhead
+        parts: List[pd.DataFrame] = []
+        by_ds: Dict[str, List[int]] = {}
+        for ds_key, row_idx in selected:
+            by_ds.setdefault(ds_key, []).append(row_idx)
+        for ds_key, idx_list in by_ds.items():
+            frame = self.processed_dfs.get(ds_key)
+            if frame is None or not is_dataframe(frame) or frame.empty:
+                continue
+            parts.append(frame.iloc[idx_list])
+
         if not parts:
-            return None, fresh, resampled
-        return pd.concat(parts, ignore_index=True), fresh, resampled
+            return None, take, 0
+
+        resampled = max(0, missing)
+        return pd.concat(parts, ignore_index=True), take, resampled
 
     def _shuffle_batch(self, batch: pd.DataFrame) -> pd.DataFrame:
         if batch_len(batch) <= 1:

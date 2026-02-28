@@ -95,21 +95,11 @@ class ClassifierWrapper:
         return numpy.array([self.inverse_label_encoding.get(label, label) for label in labels])
 
     def load_classifier(
-        self, path: Union[str, Path], name: str = "classifier.bin"
+        self, path: Union[str, Path]
     ):
-        path = Path(path)
-        if not path.exists() or not path.is_dir():
-            raise FileNotFoundError(f"Directory {path} does not exist")
-        model_path = path / name
-        if not model_path.exists():
-            pkl_files = list(path.glob("*.bin"))
-            available = [f.name for f in pkl_files]
-            print(
-                f"Classifier file {model_path} does not exist. Available .bin files: {available}"
-            )
-            raise FileNotFoundError(
-                f"Classifier file {model_path} does not exist"
-            )
+        model_path = Path(path)
+        if not model_path.is_file():
+            raise FileNotFoundError(f"Classifier file {model_path} does not exist")
 
         with open(model_path, "rb") as f:
             self.classifier = pickle.load(f)

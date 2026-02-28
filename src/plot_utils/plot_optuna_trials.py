@@ -467,6 +467,10 @@ def _build_trial_record(
     if not isinstance(payload, dict):
         return None
 
+    status = payload.get("status")
+    if isinstance(status, str) and status.strip().lower() == "failed":
+        return None
+
     per_command: Dict[str, MetricPair] = {}
     for spec in command_specs:
         per_command[spec.key] = _resolve_command_pair(payload, metric_names, spec.prefixes)
@@ -608,6 +612,17 @@ def _scatter_points(
         print(f"[WARN] No {command_label} metrics available; skipping plot {out_path.name}")
         return False
 
+    # Compute axis limits with [0, 1] baseline and small padding
+    xs = [x for _, x, _ in phase_metrics if x is not None]
+    ys = [y for _, _, y in phase_metrics if y is not None]
+    def _bounds(vals):
+        lo = min([0.0] + vals) if vals else 0.0
+        hi = max([1.0] + vals) if vals else 1.0
+        pad = max((hi - lo) * 0.05, 0.02)
+        return (lo - pad, hi + pad)
+    xlim = _bounds(xs)
+    ylim = _bounds(ys)
+
     plt.figure(figsize=(8, 6))
     ax = plt.gca()
     for record, x_val, y_val in phase_metrics:
@@ -635,6 +650,8 @@ def _scatter_points(
     ax.set_ylabel(f"{command_label} {metric_names[1]}")
     default_title = f"Optuna trials ({command_label} metrics)"
     ax.set_title(title or default_title)
+    ax.set_xlim(*xlim)
+    ax.set_ylim(*ylim)
     ax.grid(True, linestyle=":", linewidth=0.6)
 
     plotted_records = [item[0] for item in phase_metrics]
