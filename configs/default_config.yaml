@@ -1,4 +1,4 @@
-experiment_name: lin_sequence_test
+experiment_name: example_base_config
 
 # root of the dataset folder
 # should contain subfolders with ID in the names (e.g., 001, 002, ...)
@@ -98,8 +98,16 @@ commands:
   #     type: balanced
   #     # Label configuration
   #     labels: ["Benign", "Malicious"]
+  #     balance:
+  #       Benign: 0.5
+  #       Malicious: 0.5
+  #     datasets: ["010","015","011","010"]
 
-  #     # Balance specification (fractions must sum to 1.0)
+  # -name: train_oversample
+  #   command: "train"
+  #   mixer:
+  #     type: oversampling
+  #     labels: ["Benign", "Malicious"]
   #     balance:
   #       Benign: 0.5
   #       Malicious: 0.5
@@ -109,25 +117,6 @@ commands:
     command: "train" # train/test
     mixer:
       type: "sequence"
-       # Label configuration
-      labels: ["Benign", "Malicious"]
-
-       # Balance specification (fractions must sum to 1.0)
-      balance:
-        Benign: 0.5
-        Malicious: 0.5
-
-      # Alternative balance formats (uncomment to use):
-      # balance: [0.9, 0.1]  # List format (maps to labels in order)
-      # balance: null  # Equal fractions for all labels
-
-
-#     # Memory management
-      stash_size_per_label: 800  # Default: 500,  samples for diversity
-      buffer_size_per_label: 1500  # Default: 1000, unused samples queue
-
-#     # Pull configuration
-#     # Datasets to mix
       datasets: ["010", "011"]
 
 
