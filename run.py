@@ -108,66 +108,6 @@ def main(config_path: str = str(DEFAULT_CONFIG_PATH), optuna_mode: bool = False)
             print(f"[ERROR] Pipeline failed: {e}")
             traceback.print_exc()
             return 1
-        return 0 if success else 1
-    else:
-        # Optuna mode: only create optuna/ subdirectory
-        optuna_dir = unique_exp_dir / "optuna"
-        optuna_dir.mkdir(exist_ok=True)
-        cfg_reader = ConfigReader(config_path)
-        optuna_cfg = cfg_reader.get_optuna_config()
-        search_space = optuna_cfg["hyperparameters"]
-        optuna_section_present = "optuna" in base_config
-        search_space_populated = _has_tunable_params(search_space)
-        if not optuna_section_present or not search_space_populated:
-            if not optuna_section_present:
-                reason = (
-                    "[Optuna] Configuration does not define an 'optuna' section; cannot run hyperparameter search."
-                )
-            else:
-                reason = (
-                    "[Optuna] No tunable parameters were found in the optuna.hyperparameters section; nothing to optimize."
-                )
-            print(reason)
-            _log_optuna_message(optuna_dir, reason)
-            return 1
-        metric_raw = optuna_cfg.get("metric", ["f1", "malware_fpr"])
-        if isinstance(metric_raw, str):
-            if metric_raw.startswith("(") and metric_raw.endswith(")"):
-                metric_names = [m.strip() for m in metric_raw[1:-1].split(",")]
-            else:
-                metric_names = [m.strip() for m in metric_raw.split(",")]
-        elif isinstance(metric_raw, (list, tuple)):
-            metric_names = list(metric_raw)
-        else:
-            metric_names = ["f1", "malware_fpr"]
-        directions = optuna_cfg.get("directions", ["maximize", "minimize"])
-        n_trials = optuna_cfg.get("n_trials", 20)
-        n_jobs = optuna_cfg.get("n_jobs", 1)
-        try:
-            optimizer = OptunaOptimizer(
-                pipeline_cls=PipelineRunner,
-                config_reader_cls=ConfigReader,
-                base_config=base_config,
-                exp_dir=str(unique_exp_dir),
-                metric_names=metric_names,
-                search_space=search_space,
-                n_trials=n_trials,
-                directions=directions,
-                n_jobs=n_jobs,
-                optuna_run_dir=str(optuna_dir),
-                pruner_config=optuna_cfg.get("pruner"),
-                git_commit=git_commit,
-            )
-            optimizer.optimize()
-        except Exception as e:
-            print(f"[ERROR] Optuna optimization failed: {e}")
-            traceback.print_exc()
-            return 2
-        return 0
-
-    # Save config in both yaml and json for both modes
-    with open(unique_exp_dir / "config_effective.yaml", "w") as f:
-        yaml.safe_dump(base_config, f)
     with open(unique_exp_dir / "config_effective.json", "w") as f_json:
         json.dump(base_config, f_json, indent=2)
 

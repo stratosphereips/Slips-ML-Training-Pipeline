@@ -189,7 +189,7 @@ class TestSKLearnWrapperPartialFitAndIO:
         new_wrapper = cw.SKLearnClassifierWrapper(
             classifier=None, preprocessing_handler=None
         )
-        new_wrapper.load_classifier(path=tmp_path, name="classifier.pkl")
+        new_wrapper.load_classifier(path=saved_file)
         assert isinstance(new_wrapper.classifier, dict)
         assert new_wrapper.classifier["value"] == 123
         assert new_wrapper.is_trained is True
