@@ -6,3 +6,4 @@ src/cache/*
 .ruff_cache/
 config.yaml
 profiling/
+datasets/

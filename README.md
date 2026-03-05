@@ -7,6 +7,14 @@ This repo contains a supplemntary ML pipeline for training cybersecurity models,
 ```bash
 pip install -r requirements.txt
 ```
+- Prefer a symlink so every tool (native or Docker) keeps targeting `./datasets` while you continue to store the real data elsewhere:
+```bash
+mkdir -p datasets
+ln -s /absolute/path/to/your/datasets ./datasets
+# Need elevated access instead? swap ln -s for:
+# sudo mount --bind /absolute/path/to/your/datasets ./datasets
+```
+- Whatever path you symlink to is now authoritative. Grab it with `readlink -f datasets` and reuse that **exact** absolute path when mounting volumes in Docker, otherwise the container will see a dangling symlink.
 - Run the pipeline with a config from the new configs/ folder:
 ```bash
 python run.py configs/default_config.yaml
@@ -23,6 +31,16 @@ docker build -t slips-pipeline:latest .
 docker compose run --rm pipeline python run.py configs/default_config.yaml
 docker compose run --rm pipeline python run.py configs/optuna_conf.yaml --optuna
 ```
+- Mount the symlink target inside Docker so the container can follow `./datasets -> /absolute/path/...` without breaking:
+```bash
+DATA_ROOT=$(readlink -f datasets)
+docker compose run --rm \
+  -v "$DATA_ROOT":"$DATA_ROOT" \
+  pipeline \
+  python run.py configs/optuna_conf.yaml --optuna
+```
+- If you additionally want the dataset visible under the workspace tree (for tools that expect `/workspace/.../datasets`), add a second `-v "$DATA_ROOT":/workspace/pipeline_ml_training_for_SLIPS/datasets`.
+- In configs, keep `root` (or `paths.dataset_root`) at `./datasets`. The symlink handles native runs; Docker works because the same absolute path now exists inside the container.
 - Resource defaults from [docker-compose.yml](docker-compose.yml): mem_limit 12g, memswap_limit 16g, mem_swappiness 10, cpus 4. Adjust there for different caps.
 - Artifacts land under the mounted experiments folder on the host: [experiments](experiments).
 

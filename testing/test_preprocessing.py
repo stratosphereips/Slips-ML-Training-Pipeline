@@ -47,6 +47,21 @@ class DummyTransformerNoPartialFit:
         return X + 1  # Simple transformation
 
 
+def build_step_path_map(wrapper, base_path=None):
+    """Construct a mapping of step names to file paths using wrapper settings."""
+    if base_path is None:
+        base_dir = (
+            Path(wrapper.base_models_dir) / wrapper.experiment_name / "preprocessing"
+        )
+    else:
+        base_dir = Path(base_path)
+
+    return {
+        name: base_dir / wrapper.step_filename_template.format(name=name)
+        for name, _ in wrapper.steps
+    }
+
+
 class TestPreprocessingWrapper:
     """Comprehensive test suite for PreprocessingWrapper class."""
 
@@ -300,8 +315,11 @@ class TestPreprocessingWrapper:
             steps=[("step1", None)], experiment_name="nonexistent"
         )
 
+        missing_dir = Path(temp_dir) / "nonexistent_dir"
+        step_paths = {"step1": missing_dir / "step1.bin"}
+
         with pytest.raises(FileNotFoundError):
-            wrapper.load(base_path=temp_dir)
+            wrapper.load(step_paths)
 
     def test_load_missing_step_file_raises_error(self, temp_dir, sample_data):
         """Test load raises error if step file not found."""
@@ -321,8 +339,14 @@ class TestPreprocessingWrapper:
             experiment_name="test_exp",
         )
 
+        base_path = Path(temp_dir)
+        step_paths = {
+            "scaler": base_path / "scaler.bin",
+            "missing": base_path / "missing.bin",
+        }
+
         with pytest.raises(FileNotFoundError):
-            wrapper2.load(base_path=temp_dir)
+            wrapper2.load(step_paths)
 
     # ========== Replace Transformer Tests ==========
     def test_replace_transformer_updates_step(self):
@@ -386,7 +410,8 @@ class TestPreprocessingWrapper:
             steps=[("scaler", None), ("encoder", None)],
             experiment_name="workflow_test",
         )
-        wrapper2.load(base_path=temp_dir)
+        step_paths = build_step_path_map(wrapper2, base_path=temp_dir)
+        wrapper2.load(step_paths)
         result2 = wrapper2.transform(X)
 
         # Results should match
@@ -672,8 +697,10 @@ class TestPreprocessingWrapper:
         assert (base_path / "encoder.bin").exists()
 
     # ========== Updated Load Tests ==========
-    def test_load_without_base_path_uses_default(self, temp_dir, sample_data):
-        """Test load uses base_models_dir/experiment_name/preprocessing when base_path is None."""
+    def test_load_with_step_paths_from_default_location(
+        self, temp_dir, sample_data
+    ):
+        """Test load succeeds when step paths target the default save directory."""
         X, y = sample_data
         transformer1 = DummyTransformer()
         transformer2 = DummyTransformer()
@@ -693,13 +720,14 @@ class TestPreprocessingWrapper:
             experiment_name="test_exp",
             base_models_dir=temp_dir,
         )
-        wrapper2.load()  # Uses same default path
+        step_paths = build_step_path_map(wrapper2)
+        wrapper2.load(step_paths)
 
         assert wrapper2.is_fitted["scaler"] is True
         assert wrapper2.is_fitted["encoder"] is True
 
-    def test_load_with_explicit_base_path(self, temp_dir, sample_data):
-        """Test load uses provided base_path when given."""
+    def test_load_with_explicit_step_paths(self, temp_dir, sample_data):
+        """Test load consumes explicitly provided step paths."""
         X, y = sample_data
         transformer = DummyTransformer()
         custom_path = Path(temp_dir) / "custom_save"
@@ -711,7 +739,8 @@ class TestPreprocessingWrapper:
 
         # Load
         wrapper2 = PreprocessingWrapper(steps=[("scaler", None)])
-        wrapper2.load(base_path=custom_path)
+        step_paths = build_step_path_map(wrapper2, base_path=custom_path)
+        wrapper2.load(step_paths)
 
         assert wrapper2.is_fitted["scaler"] is True
 
@@ -738,7 +767,8 @@ class TestPreprocessingWrapper:
             experiment_name="test_exp",
             step_filename_template="{name}.pkl",
         )
-        wrapper2.load()
+        step_paths = build_step_path_map(wrapper2)
+        wrapper2.load(step_paths)
 
         assert wrapper2.is_fitted["scaler"] is True
         assert wrapper2.is_fitted["encoder"] is True
@@ -767,7 +797,7 @@ class TestPreprocessingWrapper:
         )
 
         with pytest.raises(FileNotFoundError):
-            wrapper2.load()
+            wrapper2.load(build_step_path_map(wrapper2))
 
     def test_save_and_load_roundtrip_with_custom_params(
         self, temp_dir, sample_data
@@ -795,7 +825,8 @@ class TestPreprocessingWrapper:
             base_models_dir=temp_dir,
             step_filename_template="{name}.custom",
         )
-        wrapper2.load()
+        step_paths = build_step_path_map(wrapper2)
+        wrapper2.load(step_paths)
         result2 = wrapper2.transform(X)
 
         np.testing.assert_array_equal(result1, result2)

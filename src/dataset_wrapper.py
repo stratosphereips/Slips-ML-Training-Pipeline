@@ -15,6 +15,9 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 import hashlib
 import json
+import fcntl
+import os
+import tempfile
 from functools import lru_cache
 
 
@@ -114,27 +117,34 @@ class ZeekDataset:
 
     def _index_file(self):
         cache_file = self._cache_path()
+        lock_file = cache_file.with_suffix(cache_file.suffix + ".lock")
         file_stat = self.current_file.stat()
 
         # try loading from cache
         if cache_file.exists():
-            with open(
-                cache_file,
-                "r",
-                encoding=self.file_encoding,
-                errors=self.file_errors,
-            ) as f:
-                data = json.load(f)
-            if (
-                data["__file_size"] == file_stat.st_size
-                and data["__mtime"] == file_stat.st_mtime
-            ):
-                self.headers = data["headers"]
-                self.types = data["types"]
-                self.valid_indices = data["valid_indices"]
-                self.labels = data["labels"]
-                self.total_lines = len(self.valid_indices)
-                return
+            try:
+                with open(lock_file, "a+") as lock_f:
+                    fcntl.flock(lock_f.fileno(), fcntl.LOCK_SH)
+                    with open(
+                        cache_file,
+                        "r",
+                        encoding=self.file_encoding,
+                        errors=self.file_errors,
+                    ) as f:
+                        data = json.load(f)
+                if (
+                    data["__file_size"] == file_stat.st_size
+                    and data["__mtime"] == file_stat.st_mtime
+                ):
+                    self.headers = data["headers"]
+                    self.types = data["types"]
+                    self.valid_indices = data["valid_indices"]
+                    self.labels = data["labels"]
+                    self.total_lines = len(self.valid_indices)
+                    return
+            except Exception:
+                # Corrupt or stale cache; drop and rebuild below
+                cache_file.unlink(missing_ok=True)
 
         # else build fresh index
         headers, types = [], []
@@ -201,23 +211,59 @@ class ZeekDataset:
 
         # persist if large enough
         if len(valid_indices) > self.persist_cache_threshold:
-            with open(
-                cache_file,
-                "w",
-                encoding=self.file_encoding,
-                errors=self.file_errors,
-            ) as f:
-                json.dump(
-                    {
-                        "__file_size": file_stat.st_size,
-                        "__mtime": file_stat.st_mtime,
-                        "headers": headers,
-                        "types": types,
-                        "valid_indices": valid_indices,
-                        "labels": labels,
-                    },
-                    f,
+            payload = {
+                "__file_size": file_stat.st_size,
+                "__mtime": file_stat.st_mtime,
+                "headers": headers,
+                "types": types,
+                "valid_indices": valid_indices,
+                "labels": labels,
+            }
+
+            with open(lock_file, "a+") as lock_f:
+                fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)
+
+                # Re-check after acquiring the lock; another worker may have written already.
+                if cache_file.exists():
+                    try:
+                        with open(
+                            cache_file,
+                            "r",
+                            encoding=self.file_encoding,
+                            errors=self.file_errors,
+                        ) as existing_f:
+                            existing = json.load(existing_f)
+                        if (
+                            existing.get("__file_size") == file_stat.st_size
+                            and existing.get("__mtime") == file_stat.st_mtime
+                        ):
+                            return
+                    except Exception:
+                        cache_file.unlink(missing_ok=True)
+
+                fd, tmp_path = tempfile.mkstemp(
+                    dir=cache_file.parent,
+                    prefix=cache_file.name,
+                    suffix=".tmp",
+                    text=True,
                 )
+                try:
+                    with os.fdopen(
+                        fd,
+                        "w",
+                        encoding=self.file_encoding,
+                        errors=self.file_errors,
+                    ) as tmp_file:
+                        json.dump(payload, tmp_file)
+                        tmp_file.flush()
+                        os.fsync(tmp_file.fileno())
+                    os.replace(tmp_path, cache_file)
+                finally:
+                    if os.path.exists(tmp_path):
+                        try:
+                            os.remove(tmp_path)
+                        except OSError:
+                            pass
 
     def _iter_lines(self):
         headers, types = self.headers, self.types

@@ -44,7 +44,7 @@ The snippet below mirrors `configs/optuna_conf.yaml` so you can start from a kno
 ```yaml
 ---
 experiment_name: optuna_example
-root: /opt/Datasets/security-datasets-for-testing/
+root: ./datasets
 seed: 1111
 validation_split: 0.1
 batch_size_train: 1000

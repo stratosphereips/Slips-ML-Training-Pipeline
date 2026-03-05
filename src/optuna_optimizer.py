@@ -42,6 +42,7 @@ class OptunaOptimizer:
             self._log_optuna(f"Using pruner {self.pruner.__class__.__name__}")
         self.trials_log = []
         self.git_commit = git_commit
+        self.seed = int(self.base_config.get("seed", 1111))
 
     def _log_optuna(self, msg):
         from datetime import datetime
@@ -380,7 +381,8 @@ class OptunaOptimizer:
 
     def optimize(self):
         self._log_optuna("Creating new study...")
-        study = optuna.create_study(directions=list(self.directions), pruner=self.pruner)
+        sampler = optuna.samplers.TPESampler(seed=self.seed)
+        study = optuna.create_study(directions=list(self.directions), pruner=self.pruner, sampler=sampler)
         self._log_optuna(f"Study created. Study name: {getattr(study, 'study_name', 'N/A')}")
 
         self._log_optuna(f"Starting optimization with {self.n_trials} trials, {self.n_jobs} parallel jobs...")
