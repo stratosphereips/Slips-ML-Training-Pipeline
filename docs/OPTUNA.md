@@ -364,3 +364,32 @@ Use `--annotate` to stamp the trial numbers next to every point when debugging s
 The script reads `optuna_summary.json` to determine the primary/secondary objectives (e.g., `f1` vs `fpr`). If the summary is missing—common when a study was interrupted—it scans every `trial_XXXX` folder and even parses `optuna_trials.log` to reconstruct any metrics that were logged before the crash. Metric directions fall back to the experiment config when the summary is absent, so the Pareto front stays accurate even for partial runs. By the time plotting finishes you’ll see a short log that lists every generated PNG under `optuna/visuals/`, making it easy to navigate the richer output set.
 
 Colors distinguish the outer classifier (e.g., `ARFClassifier` vs `ADWINBoostingClassifier`) and marker shapes represent nested estimators (e.g., river trees inside an ensemble). Pass `--annotate` to label points with their trial numbers if you need to trace back to a specific configuration. Because the script exposes a callable `generate_optuna_trial_plots()` function, it can also be triggered programmatically from the pipeline after `optuna` runs.
+
+## Aggregating Pareto Across Experiments
+
+Use `src/plot_utils/aggregate_optuna_pareto.py` when you want one Pareto front per shared **test command** across multiple Optuna experiments. The script scans `experiments/*`, skips folders without usable Optuna trials, groups runs by individual test-command definition (name + mixer type + datasets), and writes a new timestamped folder:
+
+```bash
+python src/plot_utils/aggregate_optuna_pareto.py ./experiments
+```
+
+Output root:
+
+- `experiments/summar_runs_<timestamp>/test_set_<N>/visuals/pareto/aggregated_test_pareto.png`
+- `experiments/summar_runs_<timestamp>/test_set_<N>/summary/*`
+- `experiments/summar_runs_<timestamp>/test_set_<N>/pareto_models/*`
+
+### Metric Range Filters
+
+You can restrict which trial points are considered before Pareto extraction by passing per-metric tuple filters:
+
+```bash
+python src/plot_utils/aggregate_optuna_pareto.py ./experiments --f1 "(0.8, 1.0)" --fpr "(0.0, 0.4)"
+```
+
+Rules:
+
+- Format is `--<metric_name> "(min,max)"` (tuple/list with exactly 2 numeric values).
+- Metric names are matched case-insensitively (e.g., `--F1` and `--f1` are equivalent).
+- A trial must satisfy **all provided metric filters** to be included.
+- Filtering is applied before Pareto front computation, summary export, and model-copying.
