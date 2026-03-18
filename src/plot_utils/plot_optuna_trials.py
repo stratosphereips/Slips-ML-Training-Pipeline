@@ -546,36 +546,41 @@ def _extract_pca_value(context_path: Optional[Path], overrides_path: Optional[Pa
     context = _read_yaml(context_path) if context_path else {}
     overrides = _read_yaml(overrides_path) if overrides_path else {}
 
-    # Trials store the tuned value in overrides; prefer it when present.
+    def _to_float(value: object) -> Optional[float]:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    # Trials store the tuned value here; prefer it when present.
     if isinstance(overrides, dict):
-        for key in (
-            "preprocessing.pca.params.n_components",
-            "preprocessing.pca.n_components",
-        ):
-            raw = overrides.get(key)
-            if raw is not None:
-                try:
-                    return float(raw)
-                except (TypeError, ValueError):
-                    continue
+        # Most trials store this as a flattened override key.
+        raw = overrides.get("preprocessing.pca.n_components")
+        val = _to_float(raw)
+        if val is not None:
+            return val
+
+        # Backward compatibility with an older nested-style key.
+        raw = overrides.get("preprocessing.pca.params.n_components")
+        val = _to_float(raw)
+        if val is not None:
+            return val
 
     if isinstance(context, dict):
         prep = context.get("preprocessing")
         if isinstance(prep, dict):
             pca_block = prep.get("pca") if isinstance(prep.get("pca"), dict) else None
             if pca_block:
-                # Check direct n_components or nested params.n_components
-                if "n_components" in pca_block:
-                    try:
-                        return float(pca_block.get("n_components"))
-                    except (TypeError, ValueError):
-                        pass
+                # Current context schema: preprocessing.pca.n_components
+                val = _to_float(pca_block.get("n_components"))
+                if val is not None:
+                    return val
+
+                # Backward compatibility with nested params style.
                 params = pca_block.get("params") if isinstance(pca_block.get("params"), dict) else {}
-                if "n_components" in params:
-                    try:
-                        return float(params.get("n_components"))
-                    except (TypeError, ValueError):
-                        pass
+                val = _to_float(params.get("n_components"))
+                if val is not None:
+                    return val
             val = pick_pca_from_steps(prep.get("steps"))
             if val is not None:
                 return val
