@@ -1,6 +1,6 @@
-experiment_name: pretrained_eval_only
+experiment_name: pretrained_eval
 
-root:
+root: ./datasets
 seed: 1111
 validation_split: 0.1
 batch_size_train: 1000

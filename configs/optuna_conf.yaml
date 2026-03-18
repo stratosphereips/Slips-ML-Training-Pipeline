@@ -1,6 +1,5 @@
----
-experiment_name: example_optuna_experiment
-root:
+experiment_name: optuna_memory_bound
+root: ./datasets
 seed: 1111
 validation_split: 0.1
 batch_size_train: 1000
@@ -115,11 +114,8 @@ commands:
         - "037"
 
 optuna:
-  n_jobs: 8
+  n_jobs: 16
   enabled: true
-  pruner:
-    type: median
-    n_warmup_steps: 3
   n_trials: 512
   metric:
     - "f1"
@@ -360,6 +356,16 @@ optuna:
             choices:
               - "sequence"
               - "random"
+              - "balanced"
+          balance:
+            type: categorical
+            choices:
+              - [0.5, 0.5]
+              - [0.25, 0.75]
+              - [0.75, 0.25]
+            when:
+              mixer.type:
+                - "balanced"
           datasets:
             type: categorical
             multiple: true

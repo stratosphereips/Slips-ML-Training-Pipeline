@@ -1,0 +1,157 @@
+experiment_name: demo_run
+root: ./datasets
+seed: 1111
+validation_split: 0.1
+batch_size_train: 1000
+batch_size_test: 2000
+
+classes:
+  - "Benign"
+  - "Malicious"
+
+plotting_pths:
+  training: "./src/plot_utils/plot_train_perf.py"
+  testing: "./src/plot_utils/plot_test_perf.py"
+
+paths:
+  experiment_dir: ./experiments
+
+dataset_loader:
+  data_subdir: data
+  persist_cache_threshold: 1
+  cache_dir: ./cache
+  labeled_filenames:
+    - conn.log.labeled
+    - labeled-conn.log
+    - conn.log
+  file_encoding: utf-8
+  file_errors: ignore
+  shuffle_per_epoch: false
+
+features:
+  default_label: Benign
+  protocols_to_discard:
+    - arp
+    - ARP
+    - icmp
+    - igmp
+    - ipv6-icmp
+    - ""
+
+preprocessing:
+  steps:
+    - name: "scaler"
+      type: "StandardScaler"
+      params: {}
+    - name: "pca"
+      type: "IncrementalPCA"
+      params:
+        n_components: 8
+  save_steps: true
+  step_filename_template: "{name}.bin"
+
+model:
+  wrapper: SklearnClassifierWrapper
+  classifier_type: sklearn.linear_model.SGDClassifier
+    # overwritten by --optuna
+  classifier_params:
+    loss: "hinge"
+    alpha: 0.001
+    penalty: "l2"
+
+commands:
+  - name: "train_main"
+    # overwritten by --optuna
+    command: "train"
+    mixer:
+      type: "sequence"
+      datasets:
+        - "008"
+        - "009"
+
+  - name: "test_all"
+    command: "test"
+    mixer:
+      type: "sequence"
+      datasets:
+        - "010"
+        - "011"
+        - "012"
+        - "013"
+
+
+optuna:
+  enabled: true
+  n_trials: 8
+  n_jobs: 2
+  metric:
+    - "f1"
+    - "fpr"
+  directions:
+    - "maximize"
+    - "minimize"
+  hyperparameters:
+    preprocessing:
+      steps:
+        0:
+          type:
+            type: categorical
+            choices:
+              - "StandardScaler"
+              - "MinMaxScaler"
+      pca:
+        params:
+          n_components:
+            type: int
+            low: 5
+            high: 11
+    model:
+      classifier_type:
+        type: categorical
+        choices:
+          - "sklearn.linear_model.SGDClassifier"
+          - "sklearn.linear_model.PassiveAggressiveClassifier"
+      classifier_params:
+        sklearn.linear_model.SGDClassifier:
+          loss:
+            type: categorical
+            choices: ["hinge", "log_loss", "modified_huber"]
+          alpha:
+            type: float
+            low: 0.000001
+            high: 0.1
+            log: true
+          penalty:
+            type: categorical
+            choices: ["l2", "l1", "elasticnet"]
+    commands:
+      - name: "train_main"
+        command: "train"
+        mixer:
+          type:
+            type: categorical
+            choices: ["sequence", "random", "balanced"]
+          balance:
+            type: categorical
+            choices:
+              - [0.5, 0.5]
+              - [0.25, 0.75]
+              - [0.75, 0.25]
+            when:
+              mixer.type:
+                - "balanced"
+
+          datasets:
+            type: categorical
+            multiple: true
+            min: 1
+            max: 3
+            choices:
+              - "001"
+              - "008"
+              - "009"
+              - "010"
+              - "011"
+              - "012"
+              - "013"
+              - "014"

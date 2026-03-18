@@ -1,8 +1,8 @@
 experiment_name: example_base_config
 
-# root of the dataset folder
+# root of the dataset folder (mounted into the container as ./datasets)
 # should contain subfolders with ID in the names (e.g., 001, 002, ...)
-root:
+root: ./datasets
 seed: 1111
 validation_split: 0.1
 batch_size_train: 500
@@ -40,6 +40,8 @@ features:
     - ipv6-icmp
     - ""
 
+# setup of the models, processing and datasets from here below
+
 preprocessing:
   # steps are (name, type, params)
   # runner will instantiate these via factory mapping (type -> class)
@@ -53,20 +55,6 @@ preprocessing:
     #    n_components: 7
   save_steps: true
   step_filename_template: "{name}.bin"
-
-  # model:
-  #   wrapper: RiverClassifierWrapper
-  #   classifier_type: ADWINBoostingClassifier
-  #   classifier_params:
-  #     n_models: 5
-  #     model:
-  #       type: HoeffdingAdaptiveTreeClassifier
-  #       params:
-  #         max_depth: 15
-  #         grace_period: 300
-  #         max_size: 10
-  #         delta: 1.0e-7
-  #   save_name: classifier_adwinboost.bin
 
 model:
   wrapper: SklearnClassifierWrapper
@@ -86,32 +74,14 @@ model:
 #     n_models: 10
 
 commands:
-#  - name: "train_seq" # command name
-#    command: "train" # train/test
-#    mixer: #types: oversampling, balanced, random, sequence
-#      type: sequence
-#      datasets: ["010","015","011","010"]
 
-  # - name: "train_balanced" # command name
-  #   command: "train" # train/test
-  #   mixer: #types: oversampling, balanced, random, sequence
-  #     type: balanced
-  #     # Label configuration
-  #     labels: ["Benign", "Malicious"]
-  #     balance:
-  #       Benign: 0.5
-  #       Malicious: 0.5
-  #     datasets: ["010","015","011","010"]
+  - name: "train_balanced"
+    command: "train"
+    mixer:
+      type: balanced
+      balance: [0.5, 0.5]
+      datasets: ["010", "011"]
 
-  # -name: train_oversample
-  #   command: "train"
-  #   mixer:
-  #     type: oversampling
-  #     labels: ["Benign", "Malicious"]
-  #     balance:
-  #       Benign: 0.5
-  #       Malicious: 0.5
-  #     datasets: ["010","015","011","010"]
 
   - name: "sequential_train_fast" # command name
     command: "train" # train/test
