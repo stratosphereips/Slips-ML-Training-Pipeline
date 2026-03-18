@@ -7,6 +7,11 @@ This repo contains a supplemntary ML pipeline for training cybersecurity models,
 ```bash
 pip install -r requirements.txt
 ```
+Get relevant labeled datasets:
+- You can use your own with correct format
+- You can rewrite how features are processed for your entirely custom datasets.
+- Stratosphere datasets for security with labeled flows: https://github.com/stratosphereips/security-datasets-for-testing (this is the default the pipeline is configured for)
+Link or download dataset directory into `./datasets`:
 - Prefer a symlink so every tool (native or Docker) keeps targeting `./datasets` while you continue to store the real data elsewhere:
 ```bash
 mkdir -p datasets
