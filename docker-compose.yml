@@ -7,9 +7,10 @@ services:
       dockerfile: Dockerfile
     image: slips-pipeline:latest
     container_name: slips-pipeline
-    mem_limit: "12g"          # RAM cap
-    memswap_limit: "20g"      # RAM + swap cap
-    mem_swappiness: 8        # lower -> prefer RAM over swap
+    mem_reservation: "16g"    # soft RAM target before hard cap
+    mem_limit: "20g"          # RAM cap
+    memswap_limit: "32g"      # RAM + swap cap
+    mem_swappiness: 60       # higher -> swap earlier under pressure
     oom_kill_disable: false
     cpus: "4"
     volumes:

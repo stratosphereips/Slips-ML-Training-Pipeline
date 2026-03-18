@@ -6,6 +6,7 @@ notebook
 ipykernel
 ipython
 river
+PyYAML
 mock
 optuna
 pre-commit
