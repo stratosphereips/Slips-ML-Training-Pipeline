@@ -1,4 +1,4 @@
-# SLIPS ML Training Pipeline
+# Slips ML Training Pipeline
 
 Supplementary machine learning training pipeline for cybersecurity models used by the SLIPS project from the Stratosphere Laboratory.
 
