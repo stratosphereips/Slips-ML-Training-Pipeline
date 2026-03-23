@@ -1,6 +1,6 @@
 # Contributing
 
-All contributions are welcomed, thank you for taking the time to contribute to this project! 
+All contributions are welcomed, thank you for taking the time to contribute to this project!
 
 ## How can you contribute?
 
@@ -14,10 +14,10 @@ All contributions are welcomed, thank you for taking the time to contribute to t
 The following git branches permanent in the repository:
 
 - `main`: contains the stable version of the repository. All new features should be based on this branch.
-   
+
 ## Naming Git branches for Pull Requests
 
-To keep the Git history clean and facilitate the revision of contributions we 
+To keep the Git history clean and facilitate the revision of contributions we
 ask all branches to follow concise namings. These are the branch-naming patterns
 to follow when contributing:
 
