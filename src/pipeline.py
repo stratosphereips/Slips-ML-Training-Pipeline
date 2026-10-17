@@ -396,6 +396,8 @@ class CommandExecutor:
     def _run_test(self, idx, cmd, test_metrics=None):
         self.exp.log_event(f"Starting testing command {cmd['name']}")
         mixer_spec = self._prepare_mixer_spec(cmd)
+        # Evaluate every test flow: a validation split would silently drop part of the test set.
+        mixer_spec["validation_split"] = 0.0
         mixer = get_mixer_class(mixer_spec["type"])(mixer_spec, self.loaders, self.exp.rng)
         mixer.reset_epoch(int(cmd["effective_batch_size"]), epoch_idx=0)
 
@@ -409,7 +411,7 @@ class CommandExecutor:
                 break
 
             X, y = self.feature_extractor.process_batch(batch)
-            if X.shape[0] == 0:
+            if X is None or len(X) == 0:
                 continue
 
             Xp = self.preprocessor.transform(X)
