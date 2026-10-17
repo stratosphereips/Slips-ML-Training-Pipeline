@@ -494,27 +494,17 @@ class BalancedByLabelMixer(BaseMixer):
         fractions = [self.balance_map.get(lbl, 0.0) for lbl in self.labels]
         return _allocate_from_fractions(fractions, int(self.batch_size or 0))
 
-    def _take_for_label(self, label: str, need: int, allow_resample: bool) -> Tuple[Optional[pd.DataFrame], int, int]:
+    def _take_for_label(self, label: str, need: int) -> Optional[pd.DataFrame]:
+        """Take the next `need` fresh rows of `label`; None if fewer than `need` are left."""
         indices = self._label_indices.get(label)
         if not indices:
-            return None, 0, 0
+            return None
         start = self._label_offsets.get(label, 0)
-        available = len(indices) - start
-        take = min(need, max(0, available))
-
+        take = min(need, max(0, len(indices) - start))
         selected = indices[start:start + take]
         self._label_offsets[label] = start + take
-
-        missing = need - take
-        if missing > 0:
-            if not allow_resample or len(indices) == 0:
-                return None, take, 0
-            sampled_idx = self.rng.choice(len(indices), size=missing, replace=True)
-            for idx in sampled_idx.tolist():
-                selected.append(indices[idx])
-
-        if not selected:
-            return None, take, 0
+        if take < need or not selected:
+            return None
 
         # gather rows grouped by dataset to minimize slicing overhead
         parts: List[pd.DataFrame] = []
@@ -528,10 +518,8 @@ class BalancedByLabelMixer(BaseMixer):
             parts.append(frame.iloc[idx_list])
 
         if not parts:
-            return None, take, 0
-
-        resampled = max(0, missing)
-        return pd.concat(parts, ignore_index=True), take, resampled
+            return None
+        return pd.concat(parts, ignore_index=True)
 
     def _shuffle_batch(self, batch: pd.DataFrame) -> pd.DataFrame:
         if batch_len(batch) <= 1:
@@ -553,8 +541,8 @@ class BalancedByLabelMixer(BaseMixer):
             if need <= 0:
                 counts[label] = 0
                 continue
-            chunk, fresh, _ = self._take_for_label(label, need, allow_resample=False)
-            if chunk is None or fresh < need:
+            chunk = self._take_for_label(label, need)
+            if chunk is None:
                 return None, None
             label_chunks.append(chunk)
             counts[label] = batch_len(chunk)
@@ -570,7 +558,24 @@ class BalancedByLabelMixer(BaseMixer):
 
 
 class BalancedByLabelWithOversamplingMixer(BalancedByLabelMixer):
-    """Balanced mixer that oversamples (with replacement) when a label runs out."""
+    """Balanced mixer that oversamples (with replacement) when a label runs out.
+
+    Only fresh rows are split into train/validation. The oversampled copies are drawn
+    from rows that already went to training and are added to the train part only, so a
+    validation row is never trained on. The epoch ends once every label has run out of
+    fresh rows.
+    """
+
+    def reset_epoch(self, batch_size: int, epoch_idx: int = 0) -> None:
+        super().reset_epoch(batch_size, epoch_idx)
+        self._train_pool: Dict[str, List[tuple]] = {label: [] for label in self.labels}
+
+    def _rows_to_frame(self, rows: List[tuple]) -> pd.DataFrame:
+        by_ds: Dict[str, List[int]] = {}
+        for _label, ds_key, row_idx in rows:
+            by_ds.setdefault(ds_key, []).append(row_idx)
+        parts = [self.processed_dfs[ds_key].iloc[idx_list] for ds_key, idx_list in by_ds.items()]
+        return self._shuffle_batch(pd.concat(parts, ignore_index=True))
 
     def next_batch(self) -> Tuple[Any, Any]:
         if self.batch_size is None:
@@ -581,27 +586,41 @@ class BalancedByLabelWithOversamplingMixer(BalancedByLabelMixer):
         if sum(targets) == 0:
             return None, None
 
-        label_chunks: List[pd.DataFrame] = []
-        counts: Dict[str, int] = {}
-        resampled: Dict[str, int] = {}
+        # fresh rows of every label: (label, dataset key, row index)
+        fresh: List[tuple] = []
+        missing: Dict[str, int] = {}
         for label, need in zip(self.labels, targets):
-            if need <= 0:
-                counts[label] = 0
+            indices = self._label_indices.get(label) or []
+            start = self._label_offsets.get(label, 0)
+            take = max(0, min(need, len(indices) - start))
+            fresh.extend((label, ds_key, row_idx) for ds_key, row_idx in indices[start:start + take])
+            self._label_offsets[label] = start + take
+            missing[label] = max(0, need - take)
+        if not fresh:
+            return None, None
+
+        train_rows, val_rows = self._split_batch(fresh)
+        train_rows = list(train_rows or [])
+        val_rows = list(val_rows or [])
+        for row in train_rows:
+            self._train_pool.setdefault(row[0], []).append(row)
+
+        resampled: Dict[str, int] = {}
+        for label in self.labels:
+            pool = self._train_pool.get(label) or []
+            n_missing = missing.get(label, 0)
+            if n_missing <= 0 or not pool:
                 resampled[label] = 0
                 continue
-            chunk, fresh, added = self._take_for_label(label, need, allow_resample=True)
-            if chunk is None:
-                return None, None
-            counts[label] = batch_len(chunk)
-            resampled[label] = added
-            label_chunks.append(chunk)
+            picks = self.rng.choice(len(pool), size=n_missing, replace=True)
+            train_rows.extend(pool[i] for i in picks.tolist())
+            resampled[label] = n_missing
 
-        if not label_chunks:
-            return None, None
-        batch = pd.concat(label_chunks, ignore_index=True)
-        batch = self._shuffle_batch(batch)
-
-        train, val = self._split_batch(batch)
+        counts = {label: 0 for label in self.labels}
+        for row in train_rows + val_rows:
+            counts[row[0]] += 1
+        train = self._rows_to_frame(train_rows) if train_rows else self._empty_frame()
+        val = self._rows_to_frame(val_rows) if val_rows else None
         self._record_mix({
             "type": "balanced_oversampling",
             "counts_by_label": counts,
