@@ -516,8 +516,8 @@ def _extract_scaler_choice(context_path: Optional[Path], overrides_path: Optiona
 def _extract_pca_value(context_path: Optional[Path], overrides_path: Optional[Path]) -> Optional[float]:
     """Extract PCA n_components (or similar) from preprocessing steps.
 
-    Looks for a preprocessing step whose type contains 'pca' (case-insensitive) and returns its
-    n_components if available. Falls back to overrides when present.
+    Looks for a preprocessing step whose type contains 'pca' (case-insensitive) in the trial's
+    context.yaml and returns its n_components; falls back to a sampled step override.
     """
 
     def pick_pca_from_steps(steps):
@@ -547,38 +547,24 @@ def _extract_pca_value(context_path: Optional[Path], overrides_path: Optional[Pa
         except (TypeError, ValueError):
             return None
 
-    # Trials store the tuned value here; prefer it when present.
-    if isinstance(overrides, dict):
-        # Most trials store this as a flattened override key.
-        raw = overrides.get("preprocessing.pca.n_components")
-        val = _to_float(raw)
-        if val is not None:
-            return val
-
-        # Backward compatibility with an older nested-style key.
-        raw = overrides.get("preprocessing.pca.params.n_components")
-        val = _to_float(raw)
-        if val is not None:
-            return val
-
+    # The value the model was trained with is the PCA step's n_components in the trial config.
+    # Older search spaces sampled `preprocessing.pca(.params).n_components`, a path the pipeline
+    # never read: that value (in overrides and in context.yaml) must not be reported.
     if isinstance(context, dict):
         prep = context.get("preprocessing")
         if isinstance(prep, dict):
-            pca_block = prep.get("pca") if isinstance(prep.get("pca"), dict) else None
-            if pca_block:
-                # Current context schema: preprocessing.pca.n_components
-                val = _to_float(pca_block.get("n_components"))
-                if val is not None:
-                    return val
-
-                # Backward compatibility with nested params style.
-                params = pca_block.get("params") if isinstance(pca_block.get("params"), dict) else {}
-                val = _to_float(params.get("n_components"))
-                if val is not None:
-                    return val
             val = pick_pca_from_steps(prep.get("steps"))
             if val is not None:
                 return val
+
+    # Without a context, a sampled step value (preprocessing.steps[i].params.n_components) is the
+    # value that was applied.
+    if isinstance(overrides, dict):
+        for key, raw in overrides.items():
+            if str(key).startswith("preprocessing.steps") and str(key).endswith("n_components"):
+                val = _to_float(raw)
+                if val is not None:
+                    return val
 
     return None
 

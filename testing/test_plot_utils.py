@@ -171,3 +171,27 @@ def test_aggregate_parse_args_accepts_filters_anywhere(argv, expected_dir):
 def test_aggregate_parse_args_missing_filter_value():
     with pytest.raises(ValueError):
         agg._parse_args(["./exps", "--f1"])
+
+
+def test_pca_value_is_the_trained_one_not_the_unused_override(tmp_path):
+    """Old search spaces sampled preprocessing.pca.n_components, which the pipeline never read."""
+    import yaml
+
+    context = tmp_path / "context.yaml"
+    overrides = tmp_path / "overrides.yaml"
+    context.write_text(yaml.safe_dump({
+        "preprocessing": {
+            "pca": {"n_components": 8},
+            "steps": [
+                {"name": "scaler", "type": "StandardScaler", "params": {}},
+                {"name": "pca", "type": "IncrementalPCA", "params": {"n_components": 7}},
+            ],
+        }
+    }))
+    overrides.write_text(yaml.safe_dump({"preprocessing.pca.n_components": 8}))
+    assert pot._extract_pca_value(context, overrides) == 7.0
+
+    # without a context, a sampled step override is what was applied
+    overrides.write_text(yaml.safe_dump({"preprocessing.steps[1].params.n_components": 5}))
+    assert pot._extract_pca_value(None, overrides) == 5.0
+    assert pot._extract_pca_value(None, None) is None
