@@ -69,7 +69,8 @@ class TestClassifierWrapperProcess:
         assert cw.MALICIOUS in y2
 
         identity_preprocessor.transform.assert_called()
-        assert wrapper.is_trained is True
+        # is_trained is only set once the native fit has succeeded (partial_fit)
+        assert wrapper.is_trained is False
 
     def test_process_flows_no_missing_class_leaves_data_unchanged(
         self, identity_preprocessor, simple_X_y

@@ -122,10 +122,21 @@ class ClassifierWrapper:
             dummy_flow, _ = self.dummy_flows.get(
                 cls, self.dummy_flows["default"]
             )
-            processed_dummy = self.preprocessing_handler.transform(dummy_flow)
+            # the dummy flows carry the 11 SLIPS features; when features.columns_to_discard
+            # dropped some, they no longer fit the preprocessing/input, so skip them
+            try:
+                processed_dummy = self.preprocessing_handler.transform(dummy_flow)
+            except ValueError as exc:
+                print(f"Warning: cannot add a dummy flow for '{cls}': {exc}")
+                continue
+            if numpy.ndim(X) == 2 and numpy.shape(processed_dummy)[1] != numpy.shape(X)[1]:
+                print(
+                    f"Warning: cannot add a dummy flow for '{cls}': "
+                    f"{numpy.shape(processed_dummy)[1]} features vs {numpy.shape(X)[1]} in the batch"
+                )
+                continue
             X = numpy.concatenate([X, processed_dummy], axis=0)
             y = numpy.concatenate([y, numpy.array([cls])], axis=0)
-        self.is_trained = True
         return X, y
 
     def native_fitting_function(self, X, y, *args, **kwargs):
@@ -136,6 +147,7 @@ class ClassifierWrapper:
             if not self.is_trained:
                 X, y = self.process_flows(X, y)
                 self.native_fitting_function(X, y, classes=self.classes)
+                self.is_trained = True
             else:
                 self.native_fitting_function(X, y)
         except Exception as e:
