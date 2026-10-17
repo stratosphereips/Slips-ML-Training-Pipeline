@@ -8,7 +8,6 @@
 # Works on batcher or individual flows
 # feature_extraction_v2.py
 import pandas as pd
-import traceback
 from typing import Iterable, List, Optional, Tuple, Union
 
 from .conn_normalizer import ConnToSlipsConverter
@@ -170,9 +169,10 @@ class FeatureExtraction:
             return df, y
 
         except Exception:
-            print("Error in FeatureExtraction.process_batch():")
-            print(traceback.format_exc())
-            return pd.DataFrame([], columns=[]), pd.Series([], dtype="object")
+            # Let the error propagate: silently returning an empty batch made broken runs
+            # look successful (the batch was just skipped).
+            print("Error in FeatureExtraction.process_batch()")
+            raise
 
     def process_item(self, flow_dict: dict) -> Optional[Tuple[dict, object]]:
         """

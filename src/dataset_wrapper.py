@@ -91,10 +91,7 @@ class ZeekDataset:
     def _normalize_records(self, records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if not records:
             return []
-        try:
-            return self.converter.normalize_batch(records)
-        except Exception:
-            return records
+        return self.converter.normalize_batch(records)
 
     def find_labeled_logfile(self) -> Path:
         for fname in self.labeled_filenames:
