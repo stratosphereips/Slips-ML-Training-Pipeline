@@ -243,18 +243,11 @@ def plot_comparison_metrics(
         ]
         out = os.path.join(agg_dir, filename)
 
-        # Safe x-labels
-        labels = [str(v) for v in cumulative_total_sizes]
-        if len(labels) < batch_count:
-            labels.extend([str(i) for i in range(len(labels), batch_count)])
-
-        positions, sparse_labels = _choose_sparse_xticks(batch_count, labels)
-
         plot_major_metrics_together(
             combined,
             out,
             title=f"{short_title}\n(Validation vs Training — Aggregated)",
-            xvals=positions,
+            xvals=cumulative_total_sizes,
             xlabel="Aggregated samples",
         )
 
@@ -269,18 +262,11 @@ def plot_comparison_metrics(
         ]
         out = os.path.join(batch_dir, filename.replace(".png", "_batch.png"))
 
-        # Safe x-labels
-        labels = [str(v) for v in stepping_total_sizes]
-        if len(labels) < batch_count:
-            labels.extend([str(i) for i in range(len(labels), batch_count)])
-
-        positions, sparse_labels = _choose_sparse_xticks(batch_count, labels)
-
         plot_major_metrics_together(
             combined,
             out,
             title=f"{short_title}\n(Validation vs Training — Per-batch)",
-            xvals=positions,
+            xvals=list(range(batch_count)),
             xlabel="Batch",
         )
 
@@ -320,17 +306,11 @@ def plot_comparison_metrics_for_series(
         ]
         out = os.path.join(base_dir, filename)
 
-        # Safe x-labels
-        labels = [str(v) for v in xvals]
-        if len(labels) < length:
-            labels.extend([str(i) for i in range(len(labels), length)])
-        positions, sparse_labels = _choose_sparse_xticks(length, labels)
-
         plot_major_metrics_together(
             combined,
             out,
             title=f"{short_title}\n(Validation vs Training — {name_prefix})",
-            xvals=positions,
+            xvals=list(xvals),
             xlabel="Batch",
         )
 
@@ -347,16 +327,11 @@ def plot_comparison_metrics_for_series(
     ]
     out1 = os.path.join(base_dir, f"train_val_fn_rate_{name_prefix}.png")
 
-    labels = [str(v) for v in xvals]
-    if len(labels) < length:
-        labels.extend([str(i) for i in range(len(labels), length)])
-    positions, sparse_labels = _choose_sparse_xticks(length, labels)
-
     plot_major_metrics_together(
         fn_data,
         out1,
         title=f"{fn_title}\n(Validation vs Training — {name_prefix})",
-        xvals=positions,
+        xvals=list(xvals),
         xlabel="Batch",
     )
 
@@ -373,16 +348,11 @@ def plot_comparison_metrics_for_series(
     ]
     out2 = os.path.join(base_dir, f"train_val_fp_rate_{name_prefix}.png")
 
-    labels = [str(v) for v in xvals]
-    if len(labels) < length:
-        labels.extend([str(i) for i in range(len(labels), length)])
-    positions, sparse_labels = _choose_sparse_xticks(length, labels)
-
     plot_major_metrics_together(
         fp_data,
         out2,
         title=f"{fp_title}\n(Validation vs Training — {name_prefix})",
-        xvals=positions,
+        xvals=list(xvals),
         xlabel="Batch",
     )
 
@@ -655,7 +625,7 @@ def main():
             f"malicious_metrics_batch_{'validation' if has_validation_data else 'training'}.png",
         ),
         f"Malicious metrics (per-batch)\n({'Validation' if has_validation_data else 'Training'})",
-        stepping_sizes,
+        list(range(batch_count)),
         "Batch",
     )
     plot_malware_metrics(
@@ -677,7 +647,7 @@ def main():
             f"accuracy_batch_{'validation' if has_validation_data else 'training'}.png",
         ),
         f"Benign-Malicious Acc (per-batch)\n({'Validation' if has_validation_data else 'Training'})",
-        stepping_sizes,
+        list(range(batch_count)),
         "Batch",
     )
     plot_accuracy_metrics(
@@ -778,7 +748,7 @@ def main():
                 "malicious_metrics_batch_training.png",
             ),
             "Malicious metrics (per-batch)\n(Training)",
-            stepping_training_sizes,
+            list(range(batch_count)),
             "Batch",
         )
         plot_malware_metrics(
@@ -798,7 +768,7 @@ def main():
                 get_dir("training"), "per_batch", "accuracy_batch_training.png"
             ),
             "Benign-Malicious Acc (per-batch)\n(Training)",
-            stepping_training_sizes,
+            list(range(batch_count)),
             "Batch",
         )
         plot_accuracy_metrics(

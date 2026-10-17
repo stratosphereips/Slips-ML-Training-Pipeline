@@ -128,7 +128,7 @@ def plot_major_metrics_together(
         except Exception:
             x_axis = list(range(1, n + 1))
 
-        plt.figure(figsize=(8, 4.5))
+    plt.figure(figsize=(8, 4.5))
     for m in metric_names:
         vals = metric_values[m]
         # show a marker when there's only one point so single-point series are visible
