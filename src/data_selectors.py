@@ -422,7 +422,10 @@ class BalancedByLabelMixer(BaseMixer):
             frame = self.processed_dfs.get(key)
             if frame is None or not is_dataframe(frame) or frame.empty:
                 continue
-            if "label" not in frame.columns:
+            # ZeekDataset frames carry the label in the SLIPS 'ground_truth_label' column
+            # (their 'label' column is empty); plain frames may only have 'label'.
+            label_col = "ground_truth_label" if "ground_truth_label" in frame.columns else "label"
+            if label_col not in frame.columns:
                 continue
             order = self._orders.get(key)
             if order is None:
@@ -431,7 +434,7 @@ class BalancedByLabelMixer(BaseMixer):
                     idx_iter = self.rng.permutation(len(frame)).tolist()
             else:
                 idx_iter = order.tolist()
-            labels_series = frame["label"].reset_index(drop=True)
+            labels_series = frame[label_col].reset_index(drop=True)
             for idx in idx_iter:
                 try:
                     lbl = labels_series.iat[idx]
