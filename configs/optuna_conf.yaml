@@ -357,7 +357,7 @@ optuna:
               - [0.25, 0.75]
               - [0.75, 0.25]
             when:
-              mixer.type:
+              commands[0].mixer.type:
                 - "balanced"
           datasets:
             type: categorical
