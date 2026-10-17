@@ -10,6 +10,7 @@ Access helpers:
 """
 
 from pathlib import Path
+import copy
 import json
 from typing import Tuple, Optional
 
@@ -43,7 +44,8 @@ def _load_file(path: Path) -> dict:
 class ConfigReader:
     """
     Minimal, strict config reader. Expects a single config file (yaml/json) or a config dict.
-    No implicit defaults are injected except a few derived/resolved path fields.
+    Fills a few defaults (dataset_loader keys, paths.experiment_dir, command names) and adds
+    derived fields (resolved paths, per-command effective batch size / validation split).
     """
 
     # which fields must be present at top level
@@ -129,16 +131,15 @@ class ConfigReader:
         self._validate_plotting_paths(cfg)
         self._validate_commands(cfg)
 
-        # create a copy we'll modify (clear intent)
-        effective_config = dict(cfg)
+        # work on a deep copy so a config dict passed in is not modified
+        effective_config = copy.deepcopy(cfg)
 
         # ------------------------------
-        # propagate top-level batch sizes into dataset_loader mapping
+        # propagate the train batch size into the dataset_loader mapping
         # ------------------------------
         ds = effective_config.get("dataset_loader", {}) or {}
         ds["batch_size"] = int(effective_config["batch_size_train"])
-        ds["batch_size_test"] = int(effective_config["batch_size_test"])
-        # fill minimal dataset_loader required keys if absent (not defaults — just required shapes)
+        # fill dataset_loader defaults if absent
         ds.setdefault("data_subdir", "data")
         ds.setdefault("persist_cache_threshold", 30000)
         ds.setdefault("cache_dir", "./cache")
@@ -146,7 +147,7 @@ class ConfigReader:
         effective_config["dataset_loader"] = ds
 
         # ------------------------------
-        # resolve experiment paths (experiment_dir_resolved, preprocessing_dir_resolved)
+        # resolve experiment paths (experiment_dir_resolved)
         # ------------------------------
         paths = effective_config.get("paths", {}) or {}
         paths.setdefault("experiment_dir", "./experiments")
@@ -156,7 +157,7 @@ class ConfigReader:
         else:
             exp_name = effective_config["experiment_name"]
             base_experiments = Path(paths["experiment_dir"])
-            optuna_enabled = bool(effective_config.get("optuna", {}).get("enabled", False))
+            optuna_enabled = bool((effective_config.get("optuna") or {}).get("enabled", False))
             if optuna_enabled:
                 exp_dir = base_experiments / exp_name
             else:
@@ -173,6 +174,9 @@ class ConfigReader:
         # ------------------------------
         commands = effective_config.get("commands", [])
         for idx, cmd in enumerate(commands):
+            # the pipeline names logs/artifacts after the command, so make sure it has a name
+            if not cmd.get("name"):
+                cmd["name"] = f"cmd_{idx}"
             # effective batch size (test vs train)
             cmd["effective_batch_size"] = int(
                 effective_config["batch_size_test"] if cmd.get("command") == "test" else effective_config["batch_size_train"]
@@ -186,18 +190,9 @@ class ConfigReader:
                 eff_val = float(cmd_val)
             else:
                 eff_val = float(effective_config.get("validation_split", 0.0))
+            if cmd.get("command") == "test":
+                eff_val = 0.0  # test commands evaluate every flow; validation applies to training
             cmd["effective_validation_split"] = eff_val
-
-            # per-command paths under experiment dir (helpful for pipeline layout)
-            safe_name = cmd.get("name") or f"cmd_{idx}"
-            cmd_base = Path(paths["experiment_dir_resolved"]) / "commands" / f"{idx}_{safe_name}"
-            cmd["paths"] = {
-                "command_dir": str(cmd_base.resolve()),
-                "preprocessing": str((cmd_base / "preprocessing").resolve()),
-                "model": str((cmd_base / "model").resolve()),
-                "results": str((cmd_base / "results").resolve()),
-                "logs": str((cmd_base / "logs").resolve()),
-            }
 
             # ensure mixer sees the effective values
             # propagate effective values into mixer spec so mixers see them
@@ -210,13 +205,13 @@ class ConfigReader:
 
     def get_optuna_config(self):
         cfg = self.load()
-        optuna_cfg = cfg.get("optuna", {})
+        optuna_cfg = cfg.get("optuna") or {}
         # Provide defaults if not present
         return {
             "enabled": optuna_cfg.get("enabled", False),
             "n_trials": optuna_cfg.get("n_trials", 20),
             "n_jobs": optuna_cfg.get("n_jobs", 1),
-            "metric": optuna_cfg.get("metric", "f1"),
+            "metric": optuna_cfg.get("metric", ["f1", "fpr"]),
             "directions": optuna_cfg.get("directions", ["maximize", "minimize"]),
             "hyperparameters": optuna_cfg.get("hyperparameters", {}),
             "pruner": optuna_cfg.get("pruner", {}),
@@ -235,14 +230,14 @@ class ConfigReader:
 
     def get_preprocessing_steps(self) -> list:
         cfg = self.load()
-        return cfg.get("preprocessing", {}).get("steps", [])
+        return (cfg.get("preprocessing") or {}).get("steps") or []
 
     def get_preprocessing_save_options(self) -> dict:
         cfg = self.load()
+        preprocessing = cfg.get("preprocessing") or {}
         return {
-            "save_steps": cfg.get("preprocessing", {}).get("save_steps", True),
-            "step_filename_template": cfg.get("preprocessing", {}).get("step_filename_template", "{name}.bin"),
-            "preprocessing_dir": cfg.get("paths", {}).get("preprocessing"),
+            "save_steps": preprocessing.get("save_steps", True),
+            "step_filename_template": preprocessing.get("step_filename_template", "{name}.bin"),
         }
 
     def get_model_spec(self) -> dict:
