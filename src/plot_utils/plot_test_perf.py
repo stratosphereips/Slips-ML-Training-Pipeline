@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import glob
 import os
 import sys
 
@@ -133,7 +134,7 @@ def main():
         "-f",
         "--file",
         required=True,
-        help="Path to testing log file or directory",
+        help="Path to testing log file, or a directory with testing.log or a single *_test.log",
     )
     parser.add_argument(
         "-e", "--exp", required=True, help="Experiment identifier"
@@ -155,7 +156,13 @@ def main():
 
     file_path = args.file
     if os.path.isdir(file_path):
-        file_path = os.path.join(file_path, "testing.log")
+        candidate = os.path.join(file_path, "testing.log")
+        if not os.path.isfile(candidate):
+            # the pipeline names its logs {idx}_{command}_test.log
+            matches = sorted(glob.glob(os.path.join(file_path, "*_test.log")))
+            if len(matches) == 1:
+                candidate = matches[0]
+        file_path = candidate
         print(f"[INFO] -f is a directory, using: {file_path}")
 
     if not os.path.isfile(file_path):
