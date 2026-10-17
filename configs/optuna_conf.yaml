@@ -126,12 +126,12 @@ optuna:
   hyperparameters:
     preprocessing:
       steps:
-      pca:
-        params:
-        n_components:
-          type: int
-          low: 1
-          high: 11
+        1:  # the "pca" step
+          params:
+            n_components:
+              type: int
+              low: 1
+              high: 11
     model:
       classifier_type:
         type: categorical

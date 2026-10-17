@@ -99,12 +99,12 @@ optuna:
             choices:
               - "StandardScaler"
               - "MinMaxScaler"
-      pca:
-        params:
-          n_components:
-            type: int
-            low: 5
-            high: 11
+        1:  # the "pca" step
+          params:
+            n_components:
+              type: int
+              low: 5
+              high: 11
     model:
       classifier_type:
         type: categorical
