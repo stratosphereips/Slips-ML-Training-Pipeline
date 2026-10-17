@@ -1,20 +1,12 @@
 # test_classifier_wrapper.py
-import sys
-import types
 from unittest import mock
 
 import numpy as np
+import pandas as pd
 import pytest
 
 # Import the module under test
 from src import classifier_wrapper as cw
-
-
-# Provide a tiny 'commons' module for the imported code to use.
-commons = types.ModuleType("commons")
-commons.BENIGN = "benign"
-commons.MALICIOUS = "malicious"
-sys.modules["commons"] = commons
 
 
 @pytest.fixture
@@ -98,13 +90,33 @@ class TestClassifierWrapperProcess:
             preprocessing_handler=shrinking_preprocessor,
         )
         X2 = shrinking_preprocessor.transform(X.copy())
+        shrinking_preprocessor.transform.reset_mock()
         X2, y2 = wrapper.process_flows(X2, y.copy())
 
         # The dummy added should be transformed/shrunk to 7 features
         dummy_added = X2[-1]  # last row is the dummy for MALICIOUS
         assert dummy_added.shape[0] == 7
         assert y2[-1] == cw.MALICIOUS
-        shrinking_preprocessor.transform.assert_called()
+        shrinking_preprocessor.transform.assert_called_once()
+
+    def test_process_flows_skips_dummy_that_does_not_fit_preprocessing(self, simple_X_y):
+        """Dropped feature columns: the 11-feature dummy flow cannot be transformed."""
+        X, y = simple_X_y
+        prep = mock.Mock()
+        prep.transform = mock.Mock(side_effect=ValueError("X has 11 features, expected 9"))
+        wrapper = cw.SKLearnClassifierWrapper(classifier=mock.Mock(), preprocessing_handler=prep)
+        X2, y2 = wrapper.process_flows(X[:, :9].copy(), y.copy())
+        assert X2.shape == (2, 9)
+        assert list(y2) == list(y)
+
+    def test_partial_fit_failure_keeps_wrapper_untrained(self, identity_preprocessor, simple_X_y):
+        X, y = simple_X_y
+        clf = mock.Mock()
+        clf.partial_fit.side_effect = RuntimeError("boom")
+        wrapper = cw.SKLearnClassifierWrapper(classifier=clf, preprocessing_handler=identity_preprocessor)
+        with pytest.raises(RuntimeError):
+            wrapper.partial_fit(X.copy(), y.copy())
+        assert wrapper.is_trained is False
 
 
 class TestNativeFittingCall:
@@ -197,10 +209,12 @@ class TestSKLearnWrapperPartialFitAndIO:
 
 
 class DummyRiverLearnMany:
+    """Mimics a river model: labels go in and come out encoded as floats (0.0, 1.0, ...)."""
+
     def __init__(self, make_predict_many=True):
         self.learn_many = mock.Mock()
         if make_predict_many:
-            self.predict_many = mock.Mock(return_value=[cw.BENIGN] * 2)
+            self.predict_many = mock.Mock(return_value=[0.0] * 2)
         else:
 
             def raise_fn(*a, **kw):
@@ -208,7 +222,7 @@ class DummyRiverLearnMany:
 
             self.predict_many = mock.Mock(side_effect=raise_fn)
         self.learn_one = mock.Mock()
-        self.predict_one = mock.Mock(side_effect=lambda xi: cw.BENIGN)
+        self.predict_one = mock.Mock(side_effect=lambda xi: 0.0)
 
 
 class TestRiverWrapper:
@@ -222,6 +236,35 @@ class TestRiverWrapper:
         X, y = simple_X_y
         wrapper.partial_fit(X, y)
         assert river.learn_many.called
+        # labels are encoded (BENIGN -> 0.0, MALICIOUS -> 1.0); the last one is the dummy flow
+        np.testing.assert_array_equal(river.learn_many.call_args[0][1], [0.0, 0.0, 1.0])
+
+    def test_real_river_model_learns_and_predicts_class_labels(self, identity_preprocessor):
+        from river import tree
+
+        rng = np.random.default_rng(0)
+        X = np.vstack([rng.normal(0, 1, (40, 3)), rng.normal(5, 1, (40, 3))])
+        y = np.array([cw.BENIGN] * 40 + [cw.MALICIOUS] * 40)
+        wrapper = cw.RiverClassifierWrapper(
+            classifier=tree.HoeffdingTreeClassifier(grace_period=10),
+            preprocessing_handler=identity_preprocessor,
+        )
+        wrapper.partial_fit(X, y)
+        preds = wrapper.predict(X)
+        assert set(preds) <= {cw.BENIGN, cw.MALICIOUS}
+        assert np.mean(preds == y) > 0.9
+
+    def test_river_fallback_accepts_dataframe_input(self, identity_preprocessor):
+        """Without preprocessing steps the raw DataFrame reaches the wrapper."""
+        river = DummyRiverLearnMany(make_predict_many=False)
+        del river.learn_many
+        wrapper = cw.RiverClassifierWrapper(classifier=river, preprocessing_handler=identity_preprocessor)
+        X = pd.DataFrame({"dur": [1.0, 2.0, 3.0], "proto": [0.0, 1.0, 0.0]})
+        wrapper.is_trained = True
+        wrapper.partial_fit(X, np.array([cw.BENIGN] * 3))
+        assert river.learn_one.call_count == 3
+        assert river.learn_one.call_args.kwargs["x"] == {0: 3.0, 1: 0.0}
+        assert len(wrapper.predict(X)) == 3
 
     def test_predict_prefers_predict_many_and_falls_back_when_it_raises(
         self, identity_preprocessor, simple_X_y
@@ -476,7 +519,7 @@ class TestRiverWrapperWithCustomClasses:
         X = np.array([[10.0] * 11, [20.0] * 11])
 
         river = DummyRiverLearnMany(make_predict_many=True)
-        river.predict_many = mock.Mock(return_value=["x", "y"])
+        river.predict_many = mock.Mock(return_value=[0.0, 1.0])  # encoded "x", "y"
 
         wrapper = cw.RiverClassifierWrapper(
             classifier=river,
