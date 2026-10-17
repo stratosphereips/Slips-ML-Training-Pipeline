@@ -116,7 +116,11 @@ class FeatureExtraction:
                     "id.resp_p",
                     "orig_pkts",
                 }
-                if any(col in df.columns for col in raw_zeek_field_signatures):
+                # normalize raw Zeek frames, and SLIPS-style frames whose state is still a string
+                needs_normalizing = any(col in df.columns for col in raw_zeek_field_signatures) or (
+                    "state" in df.columns and df["state"].dtype == object
+                )
+                if needs_normalizing:
                     records = df.to_dict(orient="records")
                     norm = self.converter.normalize_batch(records)
                     df = pd.DataFrame(norm)
@@ -245,17 +249,18 @@ class FeatureExtraction:
             return df
 
         # ensure numeric sbytes/dbytes/spkts/dpkts exist and are numeric (safe)
+        zeros = pd.Series(0, index=df.index)
         df["sbytes"] = pd.to_numeric(
-            df.get("sbytes", 0), errors="coerce"
+            df.get("sbytes", zeros), errors="coerce"
         ).fillna(0)
         df["dbytes"] = pd.to_numeric(
-            df.get("dbytes", 0), errors="coerce"
+            df.get("dbytes", zeros), errors="coerce"
         ).fillna(0)
         df["spkts"] = pd.to_numeric(
-            df.get("spkts", 0), errors="coerce"
+            df.get("spkts", zeros), errors="coerce"
         ).fillna(0)
         df["dpkts"] = pd.to_numeric(
-            df.get("dpkts", 0), errors="coerce"
+            df.get("dpkts", zeros), errors="coerce"
         ).fillna(0)
 
         # compute bytes & pkts
