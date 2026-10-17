@@ -37,7 +37,8 @@ COMPARISON_PLOT_METRICS = [
 
 # Metrics for FN/FP rate comparison plots
 FN_RATE_METRIC = ("fnr", "FN Rate")
-FP_RATE_METRIC = ("fp_over_predicted", "FP Rate")
+# FP / (TP + FP), i.e. the false discovery rate -- not the FPR = FP / (FP + TN) shown elsewhere
+FP_RATE_METRIC = ("fp_over_predicted", "FP / predicted malicious (FDR)")
 
 
 # ============================================================================

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 import matplotlib.pyplot as plt
-from matplotlib import cm, colors as mcolors
+from matplotlib import colors as mcolors
 from matplotlib.lines import Line2D
 import yaml
 
@@ -858,7 +858,8 @@ def _scatter_points(
 
     plt.tight_layout()
     ensure_dir(out_path.parent)
-    plt.savefig(out_path)
+    # legends sit outside the axes; "tight" keeps them from being clipped
+    plt.savefig(out_path, bbox_inches="tight")
     plt.close()
     print(f"[INFO] Saved {out_path}")
     return True
@@ -916,7 +917,7 @@ def _scatter_points_colormap(
 
     # Create integer boundaries and center ticks on integers
     bounds = list(range(int(lower), int(upper) + 2))
-    base_cmap = cm.get_cmap(cmap_name, len(bounds))
+    base_cmap = plt.get_cmap(cmap_name, len(bounds))
     norm = mcolors.BoundaryNorm(boundaries=bounds, ncolors=base_cmap.N, clip=True)
 
     sc = ax.scatter(
@@ -1076,7 +1077,8 @@ def _scatter_deltas(
 
     plt.tight_layout()
     ensure_dir(out_path.parent)
-    plt.savefig(out_path)
+    # legends sit outside the axes; "tight" keeps them from being clipped
+    plt.savefig(out_path, bbox_inches="tight")
     plt.close()
     print(f"[INFO] Saved {out_path}")
     return True
@@ -1358,6 +1360,14 @@ def generate_optuna_trial_plots(
     if front_records:
         pareto_dir = visuals_dir / "pareto"
         train_front = pareto_dir / f"{train_spec.folder_name}_pareto.png"
+        front_spec = pareto_source_spec or train_spec
+        if front_spec.key == train_spec.key:
+            train_front_title = f"Pareto front ({train_spec.display_name} metrics)"
+        else:
+            # the front was computed on another command; this only re-plots its members
+            train_front_title = (
+                f"{front_spec.display_name} Pareto front, shown in {train_spec.display_name} metrics"
+            )
         if _scatter_points(
             front_records,
             train_spec.key,
@@ -1367,7 +1377,7 @@ def generate_optuna_trial_plots(
             markers,
             train_front,
             annotate=True,
-            title=f"Pareto front ({train_spec.display_name} metrics)",
+            title=train_front_title,
         ):
             outputs.append(train_front)
 
