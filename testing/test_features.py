@@ -93,14 +93,18 @@ class TestFeatureExtraction:
         df_no_label = pd.DataFrame([{"sport": 80}])
         assert extractor._extract_labels(df_no_label).iloc[0] == "Benign"
 
-    def test_extract_labels_substring_matching(self, extractor):
-        """Test label extraction with substring 'MAL' matching and "1" for malicious."""
-        # Test "MAL" substring matching
+    def test_extract_labels_word_start_mal_matching(self, extractor):
+        """'MAL' at the start of a word, or "1", marks a flow malicious."""
         test_cases_mal = [
+            "Malicious",
+            "Malware",
             "MALWARE",
+            "MALWARE_SMB",
+            "ATTACK_MALWARE",
             "ATTACK_MALICIOUS",
             "MAL",
             "1",
+            " malicious ",
         ]
         for label in test_cases_mal:
             df = pd.DataFrame([{"ground_truth_label": label}])
@@ -109,19 +113,37 @@ class TestFeatureExtraction:
                 result == MALICIOUS
             ), f"Failed for label '{label}', got {result}"
 
-    def test_extract_labels_fallback_priority(self, extractor):
-        """Test label extraction fallback priority (ground_truth -> detailed -> label -> module_labels)."""
-        # Only detailed_ground_truth_label
+    @pytest.mark.parametrize("label_col", ["ground_truth_label", "detailed_ground_truth_label", "label", "detailed_label"])
+    @pytest.mark.parametrize("label", ["Normal", "NORMAL", "From-Normal-V42", "Anomaly", "ANOMALY", "Benign", "", "0"])
+    def test_extract_labels_mal_inside_word_is_benign(self, extractor, label_col, label):
+        """'MAL' inside a word (Normal, Anomaly) does not make a flow malicious."""
+        df = pd.DataFrame([{label_col: label}])
+        assert extractor._extract_labels(df).iloc[0] == BENIGN
+
+    def test_extract_labels_any_label_column_marks_malicious(self, extractor):
+        """All label columns are ORed: the flow is malicious if any of them is malicious."""
+        # a single label column of each kind
         df = pd.DataFrame([{"detailed_ground_truth_label": "Malicious"}])
         assert extractor._extract_labels(df).iloc[0] == MALICIOUS
 
-        # Only label
         df = pd.DataFrame([{"label": "Benign"}])
         assert extractor._extract_labels(df).iloc[0] == BENIGN
 
-        # Only module_labels
         df = pd.DataFrame([{"module_labels": "Malicious"}])
         assert extractor._extract_labels(df).iloc[0] == MALICIOUS
+
+        df = pd.DataFrame([{"detailed_label": "Malware"}])
+        assert extractor._extract_labels(df).iloc[0] == MALICIOUS
+
+        # no column has priority: a later malicious column wins over a benign ground truth
+        df = pd.DataFrame(
+            [
+                {"ground_truth_label": "Benign", "label": "", "detailed_label": "Malware"},
+                {"ground_truth_label": "Malicious", "label": "Benign", "detailed_label": ""},
+                {"ground_truth_label": "Benign", "label": "Normal", "detailed_label": "From-Normal-V42"},
+            ]
+        )
+        assert extractor._extract_labels(df).tolist() == [MALICIOUS, MALICIOUS, BENIGN]
 
     def test_extract_labels_nan_and_none_handling(self, extractor):
         """Test label extraction handles NaN/None gracefully."""
@@ -431,9 +453,85 @@ class TestFeatureExtraction:
         assert result["sport"].iloc[0] == 8080
         assert result["dport"].iloc[0] == 443
 
+    @pytest.mark.parametrize(
+        "proto, expected",
+        [
+            ("tcp", 0.0),
+            ("TCP", 0.0),
+            ("udp", 1.0),
+            (" UDP ", 1.0),
+            ("icmp", 2.0),
+            ("ICMP", 2.0),
+            ("icmp-ipv6", 3.0),
+            ("ICMP-IPv6", 3.0),
+            ("arp", 4.0),
+            ("ARP", 4.0),
+            # anything else -> 0, exact match only (no substring matching)
+            ("ipv6-icmp", 0.0),
+            ("igmp", 0.0),
+            ("udplite", 0.0),
+            ("icmpv6", 0.0),
+            ("sctp", 0.0),
+            ("unknown", 0.0),
+        ],
+    )
+    def test_proto_encoding_matches_slips(self, proto, expected):
+        """Proto encoding is the exact-match SLIPS table; unknown protocols map to 0."""
+        fe = FeatureExtraction(protocols_to_discard=[])
+        df = pd.DataFrame([{"proto": proto, "sbytes": 1, "dbytes": 1, "spkts": 1, "dpkts": 1}])
+        result = fe._process_features(df)
+        assert result["proto"].tolist() == [expected]
+        assert result["proto"].dtype == np.float64
+
+    def test_proto_encoding_through_process_batch(self):
+        """The public process_batch path uses the same proto codes."""
+        fe = FeatureExtraction(protocols_to_discard=[])
+        protos = ["tcp", "udp", "icmp", "icmp-ipv6", "arp", "igmp"]
+        X, _ = fe.process_batch([{"proto": p, "ground_truth_label": "Benign"} for p in protos])
+        assert X["proto"].tolist() == [0.0, 1.0, 2.0, 3.0, 4.0, 0.0]
+
+    def test_missing_proto_is_discarded_as_empty(self, extractor):
+        """A missing proto (None/NaN) becomes "" and is dropped when "" is in protocols_to_discard."""
+        flows = [
+            {"proto": None, "sbytes": 1, "ground_truth_label": "Malicious"},
+            {"proto": "tcp", "sbytes": 2, "ground_truth_label": "Benign"},
+            {"sbytes": 3, "ground_truth_label": "Malicious"},  # no proto key at all
+        ]
+        X, y = extractor.process_batch(flows)
+        assert X["sbytes"].tolist() == [2]
+        assert y.tolist() == [BENIGN]
+
+        df = pd.DataFrame({"proto": [np.nan, "udp"], "sbytes": [1, 2]})
+        assert extractor._process_features(df)["sbytes"].tolist() == [2]
+
+        # without "" in the discard list the flow is kept (and encoded as 0)
+        fe_keep = FeatureExtraction(protocols_to_discard=["arp"])
+        X_keep, _ = fe_keep.process_batch(flows)
+        assert X_keep["sbytes"].tolist() == [1, 2, 3]
+        assert X_keep["proto"].tolist() == [0.0, 0.0, 0.0]
+
+    def test_discard_ignores_case_and_whitespace(self):
+        fe = FeatureExtraction(protocols_to_discard=[" ARP", "icmp "])
+        df = pd.DataFrame({"proto": [" arp ", "ICMP", "tcp "], "sbytes": [1, 2, 3]})
+        result = fe._process_features(df)
+        assert result["sbytes"].tolist() == [3]
+        assert result["proto"].tolist() == [0.0]
+
+    def test_process_features_missing_byte_and_packet_columns(self, extractor):
+        """Missing sbytes/dbytes/spkts/dpkts columns default to 0 instead of crashing."""
+        df = pd.DataFrame([{"proto": "tcp", "dur": 1.0}, {"proto": "udp", "dur": 2.0}])
+        result = extractor._process_features(df)
+        for col in ["sbytes", "dbytes", "spkts", "dpkts", "bytes", "pkts"]:
+            assert result[col].tolist() == [0, 0], col
+
+        X, y = extractor.process_batch(df)
+        assert list(X.columns) == ["dur", "proto", "spkts", "dpkts", "sbytes", "dbytes", "bytes", "pkts"]
+        assert X["bytes"].tolist() == [0, 0]
+        assert y.tolist() == [BENIGN, BENIGN]
+
     # ========== Process Batch Tests ==========
     def test_process_batch_various_input_formats(self, extractor, basic_flow):
-        """Test process_batch with different input formats."""
+        """DataFrame, list-of-dicts and single-dict inputs give the same features."""
         # DataFrame input
         df = pd.DataFrame([basic_flow, basic_flow])
         X_df, y_df = extractor.process_batch(df)
@@ -442,14 +540,79 @@ class TestFeatureExtraction:
         # List of dicts
         X_list, y_list = extractor.process_batch([basic_flow, basic_flow])
         assert len(X_list) == 2 and len(y_list) == 2
+        assert X_df["state"].tolist() == X_list["state"].tolist() == [1.0, 1.0]
+        pd.testing.assert_frame_equal(X_df, X_list)
+        pd.testing.assert_series_equal(y_df, y_list)
 
         # Single dict
         X_single, y_single = extractor.process_batch(basic_flow)
         assert len(X_single) == 1 and len(y_single) == 1
+        pd.testing.assert_frame_equal(X_single, X_list.iloc[:1])
 
         # Empty list
         X_empty, y_empty = extractor.process_batch([])
         assert X_empty.empty and y_empty.empty
+
+    def test_process_batch_raw_zeek_dataframe(self, extractor):
+        """A DataFrame with raw Zeek columns is normalized like a list of raw Zeek dicts."""
+        zeek = {
+            "ts": "1609459200.001",
+            "uid": "zeek-uid",
+            "id.orig_h": "192.168.1.10",
+            "id.orig_p": "54321",
+            "id.resp_h": "8.8.8.8",
+            "id.resp_p": "53",
+            "proto": "udp",
+            "service": "dns",
+            "duration": "0.1",
+            "orig_bytes": "60",
+            "resp_bytes": "140",
+            "conn_state": "SF",
+            "orig_pkts": "1",
+            "resp_pkts": "1",
+            "label": "Benign",
+        }
+        flows = [zeek, dict(zeek, conn_state="S0", label="Malicious")]
+
+        X_df, y_df = extractor.process_batch(pd.DataFrame(flows))
+        X_list, y_list = extractor.process_batch(flows)
+
+        pd.testing.assert_frame_equal(X_df, X_list)
+        pd.testing.assert_series_equal(y_df, y_list)
+        assert X_df["state"].tolist() == [1.0, 0.0]
+        assert X_df["sport"].tolist() == [54321, 54321]
+        assert X_df["bytes"].tolist() == [200, 200]
+        assert y_df.tolist() == [BENIGN, MALICIOUS]
+
+    def test_process_batch_slips_frame_with_string_state(self, extractor):
+        """A SLIPS-style DataFrame whose state is still a string (e.g. "SF") gets normalized."""
+        df = pd.DataFrame(
+            [
+                {"proto": "tcp", "sport": 1, "dport": 80, "dur": 1.0, "sbytes": 10, "dbytes": 20,
+                 "spkts": 2, "dpkts": 2, "state": "SF", "ground_truth_label": "Malicious"},
+                {"proto": "tcp", "sport": 2, "dport": 80, "dur": 1.0, "sbytes": 10, "dbytes": 20,
+                 "spkts": 1, "dpkts": 0, "state": "S0", "ground_truth_label": "Benign"},
+            ]
+        )
+        X, y = extractor.process_batch(df)
+        assert X["state"].tolist() == [1.0, 0.0]
+        assert X["state"].dtype == np.float64
+        assert y.tolist() == [MALICIOUS, BENIGN]
+
+    def test_process_batch_reraises_errors(self, extractor, basic_flow, monkeypatch, capsys):
+        """Errors are re-raised (with a one-line context print), not turned into empty batches."""
+        def boom(df):
+            raise ValueError("feature processing failed")
+
+        monkeypatch.setattr(extractor, "_process_features", boom)
+        with pytest.raises(ValueError, match="feature processing failed"):
+            extractor.process_batch([basic_flow])
+        assert "Error in FeatureExtraction.process_batch()" in capsys.readouterr().out
+
+    def test_process_batch_invalid_input_raises(self, extractor):
+        """Input that is not a DataFrame, dict or iterable of dicts raises."""
+        with pytest.raises(TypeError):
+            extractor.process_batch(12345)
 
     def test_process_batch_zeek_auto_detection(self, extractor):
         """Test process_batch auto-detects and converts Zeek format."""
@@ -500,8 +663,7 @@ class TestFeatureExtraction:
             "bytes",
             "pkts",
         ]
-        actual_cols = [col for col in expected_cols if col in X.columns]
-        assert len(actual_cols) > 0, "Should have some expected columns"
+        assert list(X.columns) == expected_cols == extractor.slips_column_order
 
         # Check index reset
         assert X.index.equals(pd.RangeIndex(3))
@@ -563,8 +725,13 @@ class TestFeatureExtraction:
         X, y = fe.process_batch(flows)
 
         assert not X.empty
-        assert "sport" in X.columns
-        assert "dur" in X.columns
+        assert X["sport"].dtype == np.int32
+        assert X["dur"].dtype == np.float32
+        assert X["sport"].tolist() == [8080]
+        assert X["dur"].iloc[0] == pytest.approx(10.5)
+        # columns without a requested type keep their default dtype
+        assert X["dport"].dtype == np.int64
+        assert X["proto"].dtype == np.float64
 
     # ========== Process Item Tests ==========
     def test_process_item_single_flow_processing(self, extractor, basic_flow):
@@ -649,6 +816,6 @@ class TestFeatureExtraction:
         assert pd.api.types.is_numeric_dtype(X["sport"])
         assert pd.api.types.is_numeric_dtype(X["proto"])
 
-        # Check labels (MALWARE_SMB contains "MAL")
+        # Check labels (MALWARE_SMB starts with "MAL")
         assert y.iloc[0] == BENIGN
         assert y.iloc[1] == MALICIOUS
