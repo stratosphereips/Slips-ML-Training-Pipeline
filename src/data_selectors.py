@@ -19,7 +19,7 @@ import pandas as pd
 # ---------------------------------------------------------------------------
 
 def is_dataframe(value: Any) -> bool:
-    return pd is not None and isinstance(value, pd.DataFrame)
+    return isinstance(value, pd.DataFrame)
 
 
 def batch_len(batch: Any) -> int:
@@ -137,8 +137,6 @@ class BaseMixer:
         self._orders = {}
 
         for key, data in self.loaders.items():
-            if data is None:
-                data = self._empty_frame()
             order = None
             if self.shuffle_per_epoch and is_dataframe(data) and batch_len(data) > 1:
                 order = self.rng.permutation(len(data))
@@ -155,12 +153,7 @@ class BaseMixer:
     # helpers
     # ------------------------------------------------------------------
     def _empty_frame(self):
-        if pd is None:
-            return []
         return pd.DataFrame()
-
-    def _random_seed(self) -> int:
-        return int(self.rng.randint(0, 2**31 - 1))
 
     def _shuffle_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
         perm = self.rng.permutation(len(df))
@@ -170,8 +163,6 @@ class BaseMixer:
         if data is None:
             return self._empty_frame()
         if is_dataframe(data):
-            return data
-        if pd is None:
             return data
         try:
             if isinstance(data, list):
@@ -395,8 +386,6 @@ class BalancedByLabelMixer(BaseMixer):
     """Return label-balanced batches until any label is exhausted."""
 
     def __init__(self, spec: Dict[str, Any], loaders: Dict[str, Any], rng: np.random.RandomState):
-        if pd is None:
-            raise RuntimeError("pandas is required for balanced mixers")
         super().__init__(spec, loaders, rng)
         ds = spec.get("datasets") or []
         if not ds:
@@ -405,7 +394,6 @@ class BalancedByLabelMixer(BaseMixer):
         self.provided_labels = spec.get("labels")
         self.balance_spec = spec.get("balance") or spec.get("balance_list") or spec.get("balance_dict")
         self.shuffle_full_table = bool(spec.get("shuffle_labels", True))
-        self.shuffle_labels = self.shuffle_full_table  # backwards compatibility
         self.shuffle_within_dataset = bool(spec.get("shuffle_within_dataset", True))
 
         self.labels: List[str] = []
