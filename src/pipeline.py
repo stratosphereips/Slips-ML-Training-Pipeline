@@ -162,12 +162,18 @@ class BuildManager:
         root = self.cfg_reader.load().get("root")
         if not root:
             raise ValueError("Config must define dataset root")
+        labeled_filenames = ds.get("labeled_filenames")
         self.loaders = find_and_load_datasets(
             root_dir=root,
             batch_size=int(ds.get("batch_size", 1000)),
             prefix_regex=ds.get("prefix_regex", r"^\d{3}"),
             data_subdir=ds.get("data_subdir", "data"),
             seed=int(self.cfg_reader.get_random_seed()),
+            persist_cache_threshold=int(ds.get("persist_cache_threshold", 30000)),
+            cache_dir=ds.get("cache_dir_resolved"),
+            labeled_filenames=list(labeled_filenames) if labeled_filenames else None,
+            file_encoding=ds.get("file_encoding", "utf-8"),
+            file_errors=ds.get("file_errors", "ignore"),
         )
         return self.loaders
 
