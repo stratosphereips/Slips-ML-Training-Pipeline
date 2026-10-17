@@ -219,7 +219,8 @@ def _parse_log_metrics(optuna_path: Path) -> Dict[int, Dict]:
     log_path = optuna_path / "optuna_trials.log"
     if not log_path.is_file():
         return {}
-    pattern = re.compile(r"Finished trial (\d+)[^|]*\| metrics:\s*(\{.*\})\s*$")
+    # line format: "Finished trial N in Xs | overrides: {...} | metrics: {...}"
+    pattern = re.compile(r"Finished trial (\d+) .*?\| metrics:\s*(\{.*\})\s*$")
     results: Dict[int, Dict] = {}
     for line in log_path.read_text().splitlines():
         match = pattern.search(line)
@@ -426,6 +427,8 @@ def _infer_metric_names_from_trials(
     seen = set()
     for files in trial_files:
         payload = _load_trial_payload(files, log_metrics, payload_cache)
+        if not isinstance(payload, dict):
+            continue  # unfinished/killed trial without metrics
         for key, value in payload.items():
             if not _is_number(value):
                 continue
