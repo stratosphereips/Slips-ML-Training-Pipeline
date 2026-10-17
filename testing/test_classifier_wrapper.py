@@ -261,7 +261,7 @@ class TestClassifierWrapperCustomClasses:
         self, identity_preprocessor
     ):
         """Test ClassifierWrapper requires at least 2 classes."""
-        with pytest.raises(AssertionError):
+        with pytest.raises(ValueError):
             cw.SKLearnClassifierWrapper(
                 classifier=mock.Mock(),
                 preprocessing_handler=identity_preprocessor,
@@ -495,8 +495,8 @@ class TestCustomClassesEdgeCases:
     def test_custom_classes_empty_list_raises_error_during_training(
         self, identity_preprocessor
     ):
-        """Test that empty classes list raises assertion error."""
-        with pytest.raises(AssertionError):
+        """Test that an empty classes list raises ValueError."""
+        with pytest.raises(ValueError):
             cw.SKLearnClassifierWrapper(
                 classifier=mock.Mock(),
                 preprocessing_handler=identity_preprocessor,

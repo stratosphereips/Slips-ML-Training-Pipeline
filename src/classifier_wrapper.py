@@ -17,7 +17,8 @@ class ClassifierWrapper:
         self.dummy_flows = {}
         self.fill_dummy()
         self.preprocessing_handler = preprocessing_handler
-        assert len(self.classes) >= 2, "At least two classes must be specified"
+        if len(self.classes) < 2:
+            raise ValueError("At least two classes must be specified")
         self._build_label_encoders()
 
     def _build_label_encoders(self):
