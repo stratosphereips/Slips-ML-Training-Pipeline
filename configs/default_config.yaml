@@ -10,7 +10,8 @@ batch_size_test: 1000
 
 classes: ["Benign", "Malicious"]
 
-# plotting scripts (paths are relative to the config file by default)
+# plotting scripts (paths are relative to the current working directory,
+# so run from the repo root)
 plotting_pths:
   training: "./src/plot_utils/plot_train_perf.py"
   testing: "./src/plot_utils/plot_test_perf.py"

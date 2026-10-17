@@ -49,6 +49,8 @@ preprocessing:
         n_components: 11
   save_steps: false
   step_filename_template: "{name}.bin"
+  # placeholder paths: point load_steps and model.load_path
+  # at an existing optuna/trial_NNNN/ directory
   load_steps:
     - name: "scaler"
       path: "./experiments/optuna_real_run_long_5/optuna/trial_0019/scaler.bin"

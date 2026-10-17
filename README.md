@@ -41,7 +41,7 @@ Typical use cases:
 
 ## Requirements
 
-- Python 3
+- Python 3.10+ (CI uses 3.10; the Docker image uses 3.13)
 - `pip` and a virtual environment tool recommended
 - Labeled datasets in the format expected by the configured dataset loader
 
@@ -51,11 +51,17 @@ Install dependencies:
 pip install -r requirements.txt
 ```
 
-Main Python dependencies include `numpy`, `pandas`, `scikit-learn`, `river`, `PyYAML`, `optuna`, and `matplotlib`.
+Main Python dependencies include `numpy`, `pandas`, `scikit-learn`, `river`, `PyYAML`, `optuna`, and `matplotlib`. `numpy`, `pandas`, `scikit-learn` and `river` are pinned to the versions SLIPS uses, so pickled models and preprocessing steps load in SLIPS.
 
 ## Datasets
 
 By default, the pipeline expects datasets under `./datasets`.
+
+Expected structure:
+
+- `<root>/<NNN...>/data/` with one of `conn.log.labeled`, `labeled-conn.log`, `conn.log` (first match wins; configurable via `dataset_loader.labeled_filenames`)
+- dataset folder names start with three digits (`dataset_loader.prefix_regex`, default `^\d{3}`); commands reference a dataset by a unique substring of its folder name, e.g. `"010"`
+- logs are Zeek TSV logs with a `#fields` header and a `label` column; flows labeled Background are skipped, labels with a word starting with `MAL` (e.g. `Malicious`, `Malware`, `ATTACK_MALWARE`) map to Malicious and all others (including e.g. `Normal`) to Benign
 
 You can:
 
@@ -66,7 +72,6 @@ You can:
 To keep a consistent local path while storing the actual data elsewhere, use a symlink:
 
 ```bash
-mkdir -p datasets
 ln -s /absolute/path/to/your/datasets ./datasets
 ```
 
@@ -91,6 +96,14 @@ Run an Optuna study:
 ```bash
 python run.py configs/optuna_conf.yaml --optuna
 ```
+
+`configs/optuna_conf.yaml` is the full search (512 trials, 16 parallel jobs); `configs/demo_config.yaml` runs a short 8-trial study that is useful as a smoke test:
+
+```bash
+python run.py configs/demo_config.yaml --optuna
+```
+
+Run commands from the repository root: dataset, cache, experiment and plotting-script paths in the configs are relative to the current working directory.
 
 ### Docker Run
 
@@ -117,7 +130,7 @@ docker compose run --rm \
   python run.py configs/default_config.yaml
 ```
 
-Current resource defaults in [`docker-compose.yml`](/Users/sebas/cloud9/Trabajo/Doctorado/WorkinCVUT/StratosphereProject/code/Slips-ML-Training-Pipeline/docker-compose.yml):
+Current resource defaults in [`docker-compose.yml`](docker-compose.yml):
 
 - `cpus: 4`
 - `mem_reservation: 16g`
@@ -128,25 +141,35 @@ Current resource defaults in [`docker-compose.yml`](/Users/sebas/cloud9/Trabajo/
 
 Pipeline behavior is defined in YAML configuration files under `configs/`.
 
-Core sections include:
+Required keys:
 
 - `experiment_name`: base name for the run output directory
 - `root`: dataset root, typically `./datasets`
-- `classes`: label set used during training and evaluation
-- `dataset_loader`: file discovery, caching, and parsing settings
+- `classes`: label set used during training and evaluation (`["Benign", "Malicious"]`)
+- `batch_size_train`, `batch_size_test`: batch sizes for train and test commands
+- `plotting_pths`: `training` and `testing` plot scripts run after each command
+- `model`: wrapper type, classifier type, and model parameters (or `load_path` to evaluate a saved model)
+- `commands`: ordered runtime commands; each has a `name`, `command: train|test`, and a `mixer` (`type`: `sequence`, `random`, `balanced` or `oversampling`, plus `datasets`)
+
+Optional keys:
+
+- `seed` (default 1111), `validation_split` (default 0.0; applies to train commands)
+- `paths.experiment_dir` (default `./experiments`)
+- `dataset_loader`: file discovery, caching, and parsing settings (`data_subdir`, `prefix_regex`, `labeled_filenames`, `cache_dir`, `persist_cache_threshold`, `file_encoding`, `file_errors`)
 - `features`: feature extraction behavior
-- `preprocessing`: ordered sklearn-style preprocessing steps
-- `model`: wrapper type, classifier type, and model parameters
-- `commands`: ordered runtime commands such as `train` and `test`
+- `preprocessing`: ordered sklearn-style preprocessing steps (`steps`, `save_steps`, `step_filename_template`, `load_steps`)
+- `optuna`: search space and study settings, used with `--optuna` (see [`docs/OPTUNA.md`](docs/OPTUNA.md))
 
-When a run starts, the pipeline creates a unique experiment directory and stores:
+When a run starts, the pipeline creates a unique experiment directory (`experiments/<experiment_name>`, or `<experiment_name>_N` if it exists) and stores:
 
-- `config_effective.yaml`
-- `config_effective.json`
-- model and preprocessing artifacts
-- logs, metrics, and plots
+- `config_effective.yaml`, `config_effective.json`: the resolved config
+- `pipeline_run_log.txt`: timestamped log of the run
+- `output/logs/`: per-command logs (`{idx}_{name}_train.log`, `{idx}_{name}_test.log`)
+- `output/models/`: the trained model (`classifier.bin` unless `model.save_name` is set)
+- `output/preprocessing/`: the fitted preprocessing steps (`<step_name>.bin`)
+- `output/results/`: plots and summaries from the plotting scripts
 
-See [`configs/default_config.yaml`](/Users/sebas/cloud9/Trabajo/Doctorado/WorkinCVUT/StratosphereProject/code/Slips-ML-Training-Pipeline/configs/default_config.yaml) for a baseline example.
+See [`configs/default_config.yaml`](configs/default_config.yaml) for a baseline example.
 
 ## Execution Model
 
@@ -163,20 +186,13 @@ This separation keeps data handling, preprocessing, model execution, and experim
 
 ## Output
 
-Experiment outputs are written under the configured experiment root, usually `./experiments/<experiment_name>/`.
+Experiment outputs are written under the configured experiment root, usually `./experiments/<experiment_name>/` (layout listed under [Configuration](#configuration)).
 
-Common artifacts include:
+Optuna runs additionally create an `optuna/` subdirectory with trial-level metrics, trial configs, trained trial models, per-trial logs, summaries, and visualization outputs; in Optuna mode `output/` stays empty.
 
-- effective runtime configuration snapshots
-- trained model files
-- saved preprocessing steps
-- training and testing logs
-- metric summaries
-- plots generated by the configured plotting scripts
+Errors are not swallowed: a failing batch stops a normal run with an error (exit code 1), and fails only that trial in Optuna mode (recorded in `optuna_trials.log` and the trial's `metrics.json`).
 
-Optuna runs additionally create an `optuna/` subdirectory with trial-level metrics, trial configs, summaries, and visualization outputs.
-
-For full Optuna details, see [`docs/OPTUNA.md`](/Users/sebas/cloud9/Trabajo/Doctorado/WorkinCVUT/StratosphereProject/code/Slips-ML-Training-Pipeline/docs/OPTUNA.md).
+For full Optuna details, see [`docs/OPTUNA.md`](docs/OPTUNA.md).
 
 ## Testing
 
@@ -186,7 +202,7 @@ Run the full test suite with:
 pytest
 ```
 
-There is also a testing guide in [`testing/README.md`](/Users/sebas/cloud9/Trabajo/Doctorado/WorkinCVUT/StratosphereProject/code/Slips-ML-Training-Pipeline/testing/README.md).
+There is also a testing guide in [`testing/README.md`](testing/README.md).
 
 ## Profiling
 
