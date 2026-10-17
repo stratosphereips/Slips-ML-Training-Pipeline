@@ -86,13 +86,9 @@ class ClassifierWrapper:
         self.dummy_flows["default"] = (dummy_default_flow, "default")
 
     def _encode_labels(self, labels):
-        if not hasattr(self, "label_encoding"):
-            return labels
         return numpy.array([self.label_encoding.get(label, label) for label in labels])
 
     def _decode_labels(self, labels):
-        if not hasattr(self, "inverse_label_encoding"):
-            return labels
         return numpy.array([self.inverse_label_encoding.get(label, label) for label in labels])
 
     def load_classifier(
@@ -114,11 +110,6 @@ class ClassifierWrapper:
                 f"Warning: The initial training data does not contain samples for all classes. Missing classes: {missing_classes}"
             )
         for cls in missing_classes:
-            if not hasattr(self, "dummy_flows"):
-                raise AttributeError(
-                    "No dummy samples provided for missing classes."
-                )
-            # print("class ", cls, " is missing, adding dummy flow for initial training")
             dummy_flow, _ = self.dummy_flows.get(
                 cls, self.dummy_flows["default"]
             )
@@ -210,11 +201,9 @@ class RiverClassifierWrapper(ClassifierWrapper):
                 # if conversion fails, fall back to per-sample learning
                 pass
 
-        # fallback: per-sample learning
-        for xi, yi in zip(X, y_encoded):
-            self.classifier.learn_one(
-                x=dict(enumerate(xi)), y=yi
-            )  # ,w= weights[yi])
+        # fallback: per-sample learning (asarray: iterating a DataFrame would yield column names)
+        for xi, yi in zip(numpy.asarray(X), y_encoded):
+            self.classifier.learn_one(x=dict(enumerate(xi)), y=yi)
 
     def predict(self, X):
         # Prefer batch prediction if the river estimator supports predict_many
@@ -232,7 +221,7 @@ class RiverClassifierWrapper(ClassifierWrapper):
 
         # Fallback: per-sample prediction using predict_one (always present in River)
         preds = []
-        for xi in X:
+        for xi in numpy.asarray(X):
             preds.append(self.classifier.predict_one(dict(enumerate(xi))))
 
         return self._decode_labels(preds)
