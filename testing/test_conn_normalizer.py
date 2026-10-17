@@ -185,6 +185,50 @@ class TestConnToSlipsConverter:
             converter._infer_state({"state": "SF"}) == 1.0
         )  # missing packets (defaults to 0)
 
+    @pytest.mark.parametrize(
+        "state, expected",
+        [(1.0, 1.0), (0.0, 0.0), (1, 1.0), (0, 0.0)],
+    )
+    def test_infer_state_keeps_normalized_numeric_state(self, converter, state, expected):
+        """An already-normalized 0/1 numeric state is kept, whatever the packet counts say."""
+        result = converter._infer_state({"state": state, "spkts": "10", "dpkts": "10"})
+        assert result == expected
+        assert isinstance(result, float)
+
+    @pytest.mark.parametrize(
+        "conn_state, orig_pkts, resp_pkts, expected",
+        [
+            ("SF", "5", "5", 1.0),
+            ("S0", "1", "0", 0.0),
+            ("REJ", "1", "1", 0.0),
+            ("RSTR", "5", "5", 1.0),  # RST with > 3 packets
+            ("RSTR", "1", "1", 0.0),  # RST with <= 3 packets
+            ("established", "1", "1", 1.0),
+        ],
+    )
+    def test_normalize_twice_keeps_state(self, converter, basic_flow, conn_state, orig_pkts, resp_pkts, expected):
+        """normalize(normalize(x)) keeps the inferred state (and the numeric fields)."""
+        flow = dict(basic_flow, conn_state=conn_state, orig_pkts=orig_pkts, resp_pkts=resp_pkts)
+        once = converter.normalize(flow)
+        twice = converter.normalize(once)
+
+        assert once["state"] == twice["state"] == expected
+        for field in ["sport", "dport", "spkts", "dpkts", "sbytes", "dbytes", "dur"]:
+            assert twice[field] == once[field], field
+        assert [f["state"] for f in converter.normalize_batch(converter.normalize_batch([flow]))] == [expected]
+
+    def test_normalize_twice_keeps_ground_truth_label(self, converter, basic_flow):
+        """normalize(normalize(x)) keeps the ground truth: the empty SLIPS 'label' must not overwrite it."""
+        once = converter.normalize(dict(basic_flow, label="Malicious"))
+        assert once["ground_truth_label"] == "Malicious"
+        assert once["label"] == ""
+        assert converter.normalize(once)["ground_truth_label"] == "Malicious"
+
+    def test_empty_value_does_not_overwrite_mapped_value_in_either_order(self, converter):
+        assert converter.normalize({"ground_truth_label": "Malicious", "label": ""})["ground_truth_label"] == "Malicious"
+        assert converter.normalize({"label": "", "ground_truth_label": "Malicious"})["ground_truth_label"] == "Malicious"
+        assert converter.normalize({"label": "Malicious"})["ground_truth_label"] == "Malicious"
+
     # ========== Tests for normalize (single flow) ==========
     def test_normalize_zeek_to_slips_mapping(self, converter, basic_flow):
         """Test normalize correctly maps Zeek fields to SLIPS fields."""
