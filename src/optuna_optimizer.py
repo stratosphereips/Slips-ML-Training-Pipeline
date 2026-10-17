@@ -308,15 +308,30 @@ class OptunaOptimizer:
     def _get_path_value(self, root, path):
         tokens = self._tokenize_path(path)
         cur = root
-        for token in tokens:
+        i = 0
+        while i < len(tokens):
+            token = tokens[i]
             if isinstance(token, int):
                 if not isinstance(cur, list) or token >= len(cur):
                     return None
                 cur = cur[token]
+                i += 1
+                continue
+            if not isinstance(cur, dict):
+                return None
+            # Keys may contain dots themselves (e.g. "river.forest.ARFClassifier"), so take the
+            # longest run of name tokens that is an existing key.
+            run_end = i
+            while run_end < len(tokens) and isinstance(tokens[run_end], str):
+                run_end += 1
+            for end in range(run_end, i, -1):
+                key = ".".join(tokens[i:end])
+                if key in cur:
+                    cur = cur[key]
+                    i = end
+                    break
             else:
-                if not isinstance(cur, dict) or token not in cur:
-                    return None
-                cur = cur[token]
+                return None
         return cur
 
     def _normalize_sampled_config(self, config):

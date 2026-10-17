@@ -272,6 +272,7 @@ optuna:
                 when:
                   model.classifier_params.river.ensemble.ADWINBoostingClassifier.model.type:
                     - "HoeffdingAdaptiveTreeClassifier"
+                    - "HoeffdingTreeClassifier"
               split_criterion:
                 type: categorical
                 choices:
@@ -303,14 +304,6 @@ optuna:
                 type: int
                 low: 50
                 high: 500
-                when:
-                  model.classifier_params.river.ensemble.ADWINBoostingClassifier.model.type:
-                    - "HoeffdingTreeClassifier"
-              split_confidence:
-                type: float
-                low: 1.0e-7
-                high: 1.0e-3
-                log: true
                 when:
                   model.classifier_params.river.ensemble.ADWINBoostingClassifier.model.type:
                     - "HoeffdingTreeClassifier"
