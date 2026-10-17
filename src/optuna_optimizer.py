@@ -182,6 +182,7 @@ class OptunaOptimizer:
         try:
             pipeline = self.pipeline_cls(
                 config,
+                optuna_mode=True,
                 optuna_trial=trial,
                 optuna_dir=str(trial_dir),
                 git_commit=self.git_commit,

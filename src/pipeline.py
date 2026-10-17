@@ -8,7 +8,7 @@ from datetime import datetime
 
 try:
     from src.conf_reader import ConfigReader
-except Exception:
+except ImportError:
     from conf_reader import ConfigReader  # type: ignore
 
 
@@ -21,7 +21,7 @@ try:
         prepare_river_nested_model_params,
         prepare_classifier_params,
     )
-except Exception:
+except ImportError:
     from class_factory import (
         get_transformer_class,
         get_classifier_class,
@@ -32,27 +32,27 @@ except Exception:
     )
 try:
     from src.dataset_wrapper import find_and_load_datasets
-except Exception:
+except ImportError:
     from dataset_wrapper import find_and_load_datasets
 
 try:
     from src.features import FeatureExtraction
-except Exception:
+except ImportError:
     from features import FeatureExtraction
 
 try:
     from src.preprocessing_wrapper import PreprocessingWrapper
-except Exception:
+except ImportError:
     from preprocessing_wrapper import PreprocessingWrapper
 
 try:
     from src.logger import Logger
-except Exception:
+except ImportError:
     from logger import Logger
 
 try:
     from src.metrics_calculator import compute_binary_metrics
-except Exception:
+except ImportError:
     from metrics_calculator import compute_binary_metrics
 
 # -------------------------
@@ -457,7 +457,7 @@ class CommandExecutor:
         self.exp.log_event("Starting plotting script in a subprocess")
         subprocess.run(
             [
-                "python",
+                sys.executable,
                 script,
                 "-f",
                 str(log_file),  # point directly to the log
@@ -485,13 +485,11 @@ class PipelineRunner:
     def __init__(self, config_path_or_dir, optuna_mode=False, optuna_trial=None, optuna_dir=None, git_commit=None):
         self.optuna_mode = optuna_mode
         self.optuna_trial = optuna_trial
-        self.optuna_dir = optuna_dir
         self.git_commit = git_commit
         self.cfg_reader = ConfigReader(config_path_or_dir)
         self.exp = ExperimentManager(self.cfg_reader)
         self.exp.prepare_dirs()
         self.exp.validate_plotting_scripts()
-        run_label = "Optuna trial"
         if self.optuna_mode and self.optuna_trial is not None:
             run_label = f"Optuna trial {self.optuna_trial.number}"
         elif self.optuna_mode:
@@ -547,6 +545,9 @@ class PipelineRunner:
             "test_datasets": [],
         }
         train_cmd = train_cmds[0]
+        if len(train_cmds) > 1:
+            skipped = [c.get("name") for c in train_cmds[1:]]
+            print(f"[WARN] Optuna trials run only the first train command '{train_cmd.get('name')}'; skipping {skipped}")
         self.exp.prepare_dirs()
         self.exp.validate_plotting_scripts()
         # Build once per trial (Optuna runner is instantiated per trial).
@@ -566,6 +567,8 @@ class PipelineRunner:
         executor._ensure_command_paths(train_cmd)
         metrics["train_command"] = train_cmd.get("name")
         metrics["train_datasets"] = self._extract_dataset_list(train_cmd)
+        # train_f1/train_fpr come from the validation part of the train command's batches;
+        # with validation_split 0 they stay at the 0.0/1.0 sentinels.
         val_counts = {"TP": 0, "FP": 0, "FN": 0, "TN": 0}
         executor._run_train(train_idx, train_cmd, val_metrics=val_counts)
         train_total = sum(val_counts.values())
