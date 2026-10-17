@@ -1,13 +1,13 @@
-numpy
-pandas
-scikit-learn
+# numpy/pandas/scikit-learn/river are pinned to the SLIPS versions so saved models load in SLIPS
+numpy==2.1.3
+pandas==2.3.3
+scikit-learn==1.7.2
 matplotlib
 notebook
 ipykernel
 ipython
-river
+river==0.22.0
 PyYAML
-mock
 optuna
 pre-commit
 pytest
