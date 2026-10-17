@@ -540,9 +540,9 @@ def main():
     if comparison_dir:
         ensure_plot_subdirs(comparison_dir)
 
-    # class counts
+    # class counts (train-only logs have no validation "per_class" entry)
     batch_class_counts, cumul_class_counts_per_batch = calculate_class_counts(
-        entries, "per_class", class_names
+        entries, "per_class" if has_validation_data else "training_per_class", class_names
     )
     plot_counts_series(
         batch_class_counts,
