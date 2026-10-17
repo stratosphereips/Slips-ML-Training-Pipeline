@@ -33,6 +33,10 @@ class OptunaOptimizer:
         self.optuna_log_path = self.optuna_run_dir / "optuna_trials.log"
         self._log_optuna(f"[Optuna] Initialized optimizer at {self.optuna_run_dir}")
         self.metric_names = metric_names
+        if len(metric_names) != len(directions):
+            raise ValueError(
+                f"optuna.metric {list(metric_names)} and optuna.directions {list(directions)} must have the same length"
+            )
         self.search_space = deepcopy(search_space or {})
         validate_optuna_search_space(self.search_space)
         self.n_trials = n_trials
@@ -40,7 +44,10 @@ class OptunaOptimizer:
         self.n_jobs = n_jobs
         self.pruner = self._create_pruner(pruner_config or {})
         if self.pruner is not None:
-            self._log_optuna(f"Using pruner {self.pruner.__class__.__name__}")
+            self._log_optuna(
+                f"Using pruner {self.pruner.__class__.__name__} (no effect: trials report no "
+                "intermediate values and multi-objective studies cannot be pruned)"
+            )
         self.trials_log = []
         self.git_commit = git_commit
         self.seed = int(self.base_config.get("seed", self.base_config.get("random_seed", 1111)))
@@ -412,8 +419,25 @@ class OptunaOptimizer:
         self._log_optuna(f"Study created. Study name: {getattr(study, 'study_name', 'N/A')}")
 
         self._log_optuna(f"Starting optimization with {self.n_trials} trials, {self.n_jobs} parallel jobs...")
-        study.optimize(self.objective, n_trials=self.n_trials, n_jobs=self.n_jobs)
+        try:
+            study.optimize(self.objective, n_trials=self.n_trials, n_jobs=self.n_jobs)
+        finally:
+            # also write the summary of the finished trials when the study crashes or is interrupted
+            self._write_study_outputs(study)
         self._log_optuna("Study optimization finished.")
+
+        try:
+            generated = generate_optuna_trial_plots(str(self.optuna_run_dir))
+            if generated:
+                rel = ", ".join(str(path.name) for path in generated)
+                self._log_optuna(f"Optuna trial plots saved: {rel}")
+            else:
+                self._log_optuna("Optuna trial plot generation produced no files (insufficient data)")
+        except Exception as exc:
+            self._log_optuna(f"Failed to generate Optuna trial plots: {exc}")
+        return study
+
+    def _write_study_outputs(self, study):
         # Save all trials summary
         trials_csv = self.optuna_run_dir / "optuna_trials.csv"
         import pandas as pd
@@ -432,17 +456,6 @@ class OptunaOptimizer:
         self._log_optuna(f"Optimization completed. Best trials summary: {json.dumps(summary, indent=2)}")
         with open(self.optuna_run_dir / "optuna_summary.json", "w") as f:
             json.dump(summary, f, indent=2)
-
-        try:
-            generated = generate_optuna_trial_plots(str(self.optuna_run_dir))
-            if generated:
-                rel = ", ".join(str(path.name) for path in generated)
-                self._log_optuna(f"Optuna trial plots saved: {rel}")
-            else:
-                self._log_optuna("Optuna trial plot generation produced no files (insufficient data)")
-        except Exception as exc:
-            self._log_optuna(f"Failed to generate Optuna trial plots: {exc}")
-        return study
 
     def _create_pruner(self, cfg):
         if not cfg:
