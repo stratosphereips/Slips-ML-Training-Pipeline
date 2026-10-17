@@ -18,14 +18,20 @@ This guide expands on the short README summary and documents every detail requir
 Optuna writes every artifact into an `optuna/` subfolder inside the generated experiment directory, and once the study closes the pipeline automatically runs `generate_optuna_trial_plots` so the visual summaries are generated without any manual steps:
 - `optuna_trials.csv` — flat table of trial parameters and metrics.
 - `optuna_summary.json` — best trials, metric names, and study metadata.
-- `trial_{n}_config.yaml` — the overrides sampled for a specific trial.
-- `trial_{n}_context.yaml` — the full runtime config after overrides.
-- `trial_{n}/metrics.json` — serialized train/test metrics for the trial, now including full confusion-matrix counts (`train_confusion` and `test_confusion`). When multiple `test` commands run (e.g., `test_all` followed by `test_unseen`), the primary command still drives the objective fields, while every additional command appears under a new `command_metrics` map that records its `f1`, `fpr`, dataset list, and confusion counts.
+- `optuna_trials.log` — timestamped study log (sampled overrides and metrics of every trial, failures with tracebacks).
+- `trial_{NNNN}/overrides.yaml` — the overrides sampled for that trial (flat `dotted.path: value`).
+- `trial_{NNNN}/context.yaml` — the full runtime config after overrides (without the `optuna` section).
+- `trial_{NNNN}/metrics.json` — serialized train/test metrics for the trial, including full confusion-matrix counts (`train_confusion` and `test_confusion`). When multiple `test` commands run (e.g., `test_all` followed by `test_unseen`), the primary command still drives the objective fields, while every additional command appears under a `command_metrics` map that records its `f1`, `fpr`, dataset list, and confusion counts.
+- `trial_{NNNN}/model.bin` and `trial_{NNNN}/<step_name>.bin` — the trained model and preprocessing steps of that trial.
+- `trial_{NNNN}/logs/{idx}_{name}_train.log` / `_test.log` — the per-batch train/test logs of that trial. Trials write nothing to the shared `<experiment>/output/`, so parallel trials (`n_jobs > 1`) cannot overwrite each other.
 - `visuals/commands/<command_slug>/<command_key>_metrics.png` — one scatter plot per configured command (train, test, or custom). Colors track the outer classifier and marker shapes denote nested classifiers, so every command gets a consistent legend.
 - `visuals/classifiers/<classifier_slug>/<command_key>_metrics.png` — the same command-level scatter plots but filtered to a single classifier family, making it easy to compare different command behaviors within one model type without extra folders.
 - `visuals/deltas/<train_slug>_minus_<test_slug>_delta.png` — a single train-minus-test delta chart that only compares the first detected train/test pair (matching the pipeline’s “primary” commands) to prevent a flood of redundant figures.
 - `visuals/pareto/<command_slug>_pareto.png` — Pareto-front-only views for whichever command supplied the metrics (usually test, but the script falls back to train or any other command that produced values). These plots are annotated automatically so you can jump to the winning trial IDs.
+- `visuals/pareto/<train_slug>_pareto.png` — the same Pareto members re-plotted in the train command's metrics (they are not a separate train front).
 - `visuals/pareto/<train_slug>_minus_<test_slug>_delta_pareto.png` — the same Pareto members in the delta space, only emitted when both sides of the preferred train/test pair exist.
+- `visuals/scalers/<scaler_slug>/<command_key>_metrics.png` — per-scaler views, only when more than one scaler type was sampled.
+- `visuals/pca/<command_slug>/<command_key>_metrics.png` — points colored by the PCA `n_components` of each trial.
 
 ## Plotting trials manually
 
@@ -40,7 +46,7 @@ python src/plot_utils/plot_optuna_trials.py experiments/<experiment_name>/optuna
 - Options: `--annotate` overlays trial numbers on points; omit it for cleaner charts.
 
 ## Complete Config Example
-The snippet below mirrors `configs/optuna_conf.yaml` so you can start from a known-good baseline:
+The snippet below is a reduced example derived from `configs/optuna_conf.yaml` (fewer trials, classifier branches and datasets); use that file for the full search space:
 ```yaml
 ---
 experiment_name: optuna_example
@@ -64,8 +70,6 @@ dataset_loader:
   persist_cache_threshold: 20000
   cache_dir: ./cache
   labeled_filenames:
-        # Mixer batch sizes are inherited from batch_size_train/test, so no per-command
-        # chunk_size specification is required or supported here.
     - conn.log.labeled
     - labeled-conn.log
     - conn.log
@@ -88,6 +92,10 @@ preprocessing:
     - name: "scaler"
       type: "StandardScaler"
       params: {}
+    - name: "pca"
+      type: "IncrementalPCA"
+      params:
+        n_components: 11
   save_steps: true
   step_filename_template: "{name}.bin"
 
@@ -152,20 +160,14 @@ optuna:
     - "maximize"
     - "minimize"
   hyperparameters:
-## Structural Validation & Fail-Fast Sampling
-- The optimizer now validates the entire `optuna.hyperparameters` tree before starting a study. Unknown keys (for example adding `metric.max_depth` under the wrong parent) or missing `low/high` bounds cause an immediate `OptunaConfigError` that points to the offending path, so malformed YAML never survives to runtime.
-- `when` clauses accept either a single value or a list, making it easy to reuse one spec across multiple nested models (`when: {model.classifier_params.river.ensemble.ADWINBoostingClassifier.model.type: ["HoeffdingAdaptiveTreeClassifier", "HoeffdingTreeClassifier"]}`).
-- Every categorical spec must supply `choices`, numeric specs must define `low`/`high`, and `group` specs require a `params` mapping—these constraints are enforced by the validator, turning misconfigurations into clear error messages.
-
-## River Metric Handling & Classifier Guards
-- River classifiers can now reference metrics by simple names in either the base config or Optuna overrides; the pipeline converts strings such as `"f1"`, `"accuracy"`, or `"kappa"` into their corresponding `river.metrics` instances automatically.
-- Passing an unknown metric name (or misspelling) raises a descriptive error before the classifier is created, avoiding the silent `Cls(**params)` failures we previously hit.
-- After Optuna samples parameters, the pipeline cross-checks them against the classifier constructor signature. Unsupported knobs are removed with a warning, and true constructor errors propagate immediately so a trial never proceeds with a `None` classifier.
-
-## Configurable Pruners
-- The `optuna.pruner` section is wired directly into `optuna.create_study`. Supported `type` values are `median`, `successive_halving`, `hyperband`, and `nop` (disables pruning). Any extra keys are forwarded as constructor kwargs (`n_warmup_steps`, `min_resource`, etc.).
-- Each study log records which pruner is active (`optuna_trials.log`) to aid reproducibility.
-
+    preprocessing:
+      steps:
+        1:  # list items are addressed by index; this is the "pca" step
+          params:
+            n_components:
+              type: int
+              low: 1
+              high: 11
     model:
       classifier_type:
         type: categorical
@@ -248,6 +250,7 @@ optuna:
                 when:
                   model.classifier_params.river.ensemble.ADWINBoostingClassifier.model.type:
                     - "HoeffdingAdaptiveTreeClassifier"
+                    - "HoeffdingTreeClassifier"
               split_criterion:
                 type: categorical
                 choices:
@@ -282,14 +285,6 @@ optuna:
                 when:
                   model.classifier_params.river.ensemble.ADWINBoostingClassifier.model.type:
                     - "HoeffdingTreeClassifier"
-              split_confidence:
-                type: float
-                low: 1.0e-7
-                high: 1.0e-3
-                log: true
-                when:
-                  model.classifier_params.river.ensemble.ADWINBoostingClassifier.model.type:
-                    - "HoeffdingTreeClassifier"
     commands:
       - name: "train_main"
         command: "train"
@@ -315,21 +310,36 @@ optuna:
               - "014"
 ```
 
+## Structural Validation & Fail-Fast Sampling
+- The optimizer validates the entire `optuna.hyperparameters` tree before starting a study. Unknown keys (for example adding `metric.max_depth` under the wrong parent) or missing `low/high` bounds cause an immediate `OptunaConfigError` that points to the offending path, so malformed YAML never survives to runtime.
+- `when` clauses accept either a single value or a list, making it easy to reuse one spec across multiple nested models (`when: {model.classifier_params.river.ensemble.ADWINBoostingClassifier.model.type: ["HoeffdingAdaptiveTreeClassifier", "HoeffdingTreeClassifier"]}`). `when` paths are absolute from the config root; keys that contain dots themselves (like the dotted class name above) are matched as a whole.
+- Every categorical spec must supply `choices`, numeric specs must define `low`/`high`, and `group` specs require a `params` mapping—these constraints are enforced by the validator, turning misconfigurations into clear error messages. Numeric specs may also set `step` and `log`.
+- `optuna.metric` and `optuna.directions` must have the same length; the study refuses to start otherwise.
+
+## River Metric Handling & Classifier Guards
+- River classifiers can reference metrics by simple names in either the base config or Optuna overrides; the pipeline converts strings such as `"f1"`, `"accuracy"`, or `"kappa"` into their corresponding `river.metrics` instances automatically.
+- Passing an unknown metric name (or misspelling) raises a descriptive error before the classifier is created, avoiding silent `Cls(**params)` failures.
+- After Optuna samples parameters, the pipeline cross-checks them against the classifier constructor signature (top-level classifier only; nested `model.params` are passed verbatim, so unknown keys there fail the trial). Unsupported knobs are removed with a warning, and true constructor errors propagate immediately so a trial never proceeds with a `None` classifier.
+
+## Pruners
+- The `optuna.pruner` section is passed to `optuna.create_study` and logged in `optuna_trials.log`. Supported `type` values are `median`, `successive_halving`, `hyperband`, and `nop`; extra keys are forwarded as constructor kwargs (`n_warmup_steps`, `min_resource`, etc.).
+- The pruner currently has no effect: trials report no intermediate values, and Optuna cannot prune multi-objective studies.
+
 ### Built-in Classifier Options
 
 The default search space wires six classifier families; you can reference the same dotted names when extending the config:
 
-- `river.forest.ARFClassifier` — tunes `lambda_value`, `n_models`, `grace_period`, `max_depth`, `split_criterion`, `delta`, `leaf_prediction`, and the river metric plus optional SGT-specific knobs.
-- `river.ensemble.ADWINBoostingClassifier` — adds `n_models` plus nested base learners (`HoeffdingAdaptiveTreeClassifier`, `HoeffdingTreeClassifier`, `SGTClassifier`, `ALMAClassifier`, `PAClassifier`) with depth, delta, split criterion, leaf prediction, drift window, etc.; the SGT/ALMA/PA options reuse the same parameter knobs described below so ensembling linear or gradient-tree models requires no extra YAML.
-- `river.linear_model.ALMAClassifier` — exposes the online large-margin parameters `p`, `alpha`, `B`, and `C` so you can explore lighter-weight models from the `river.linear_model` package.
-- `river.neighbors.KNNClassifier` — lets you sweep `n_neighbors`, `weighted`, `cleanup_every`, and `softmax` for streaming k-NN models (default engine is used unless you add a custom one to the config).
-- `river.linear_model.PAClassifier` — toggles the passive-aggressive knobs `C`, `mode` (0, 1, or 2), and `learn_intercept` so you can balance aggressiveness vs. stability for linear separators.
-- `river.tree.SGTClassifier` — now exposes every major knob (`delta`, `grace_period`, `init_pred`, `max_depth`, `lambda_value`, `gamma`, plus optional nominal attributes/quantizer toggles) and the same block is reused anywhere SGT appears (top-level, ARF leaves, or ADWIN weak learners).
+- `river.forest.ARFClassifier` — tunes `lambda_value`, `n_models`, `grace_period`, `max_depth`, `split_criterion`, `delta`, `leaf_prediction`, and the river `metric`.
+- `river.ensemble.ADWINBoostingClassifier` — adds `n_models` plus nested base learners (`HoeffdingAdaptiveTreeClassifier`, `HoeffdingTreeClassifier`, `SGTClassifier`, `ALMAClassifier`, `PAClassifier`) with depth, delta, split criterion, leaf prediction, drift window, grace period; the SGT/ALMA/PA options reuse the same parameter blocks described below.
+- `river.linear_model.ALMAClassifier` — exposes the online large-margin parameters `p`, `alpha`, `B`, and `C`.
+- `river.neighbors.KNNClassifier` — sweeps `n_neighbors`, `weighted`, and `softmax` (river's default search engine is used).
+- `river.linear_model.PAClassifier` — tunes `C`.
+- `river.tree.SGTClassifier` — tunes `delta`, `grace_period`, `init_pred`, `max_depth`, `lambda_value`, and `gamma`; the same block is reused for the top-level SGT and the ADWIN weak learner.
 
 ## Valid Optuna Config Rules
-- **Mirror the runtime tree.** The nested structure under `optuna.hyperparameters` must be identical to the runtime config so the optimizer can build paths automatically.
-- **Datasets stay lists.** When tuning which datasets a mixer uses, keep the list structure and just extend `choices` (set `multiple: true` when you want combinations).
-- **Type selectors own their branches.** Every categorical `type` parameter must have either a matching key (`classifier_params.ARFClassifier`) or a `when` guard so only the active branch is sampled.
+- **Mirror the runtime tree.** The nested structure under `optuna.hyperparameters` must be identical to the runtime config so the optimizer can build paths automatically. List items (e.g. `preprocessing.steps`) are addressed by their index as a key (`steps: {1: {params: {...}}}`); sampling a path that the pipeline never reads (e.g. `preprocessing.pca`) silently has no effect.
+- **Datasets stay lists.** When tuning which datasets a mixer uses, keep the list structure and just extend `choices` (set `multiple: true` when you want combinations). Every subset between `min` and `max` becomes one categorical choice, so set `max:` when there are many choices (20 choices without `max` are about a million subsets; `max: 5` gives 21,699). TPE has no notion of "nearby" subsets: it tries new subsets at random and re-samples the subsets that did well, so `max` mainly bounds the cost of a trial (how many datasets it trains on).
+- **Type selectors own their branches.** Every categorical `type` parameter must have either a matching key or a `when` guard so only the active branch is sampled. Under `classifier_params` the branch key is the sampled `classifier_type` (full dotted name or short class name, e.g. `classifier_params.ARFClassifier`); specs placed directly under `classifier_params` are not sampled.
 - **New parameters appear at the leaves.** Add a spec exactly where the runtime field lives (e.g., `model.classifier_params.ARFClassifier.grace_period`). No extra wiring is required.
 - **Nested models need guards.** For inner classifiers, either wrap fields in a `group` spec or gate them with `when: {path: value}` so mutually exclusive branches stay isolated.
 - **Conditions gate mutually exclusive knobs.** Use `when` with dot/list paths such as `commands[0].mixer.type` whenever a parameter should only apply in one branch. The guard accepts either a single value or a list, so you can reuse one spec across multiple base models.
@@ -337,10 +347,11 @@ The default search space wires six classifier families; you can reference the sa
 
 ## Notes & Tips
 - Every Optuna trial runs a full train + validation pass; reduce `n_trials` or leverage `n_jobs` to control runtime.
-- The optimizer logs the sampled overrides (`trial*_config.yaml`) separately from the full resolved config (`trial*_context.yaml`) for reproducibility.
-- Validation splits, dataset resolving, and command execution follow the same code paths as normal runs, so any config that works without Optuna will work with it as long as the `optuna` section is well-formed.
-- Metric names entered as strings (e.g., `"f1"`, `"kappa"`) are turned into real `river.metrics` objects automatically before the classifier is created; typos will now fail fast.
-- The `optuna.pruner` block is honored directly—set `type` to `median`, `nop`, `successive_halving`, or `hyperband` and pass any constructor kwargs alongside it.
+- The optimizer logs the sampled overrides (`trial_*/overrides.yaml`) separately from the full resolved config (`trial_*/context.yaml`) for reproducibility.
+- Validation splits, dataset resolving, and command execution follow the same code paths as normal runs, except that each trial runs only the first `train` command followed by all `test` commands, and the per-command train/test plot scripts are not invoked. Any config that works without Optuna will work with it as long as the `optuna` section is well-formed.
+- Optuna mode is selected only by the `--optuna` flag; `optuna.enabled` is informational.
+- Metric names entered as strings (e.g., `"f1"`, `"kappa"`) are turned into real `river.metrics` objects automatically before the classifier is created; typos fail fast.
+- The `train_f1`/`train_fpr` values are computed on the validation part of the train command's batches (`validation_split`); with `validation_split: 0` they stay at the 0.0/1.0 placeholders.
 - When a `test` command exists, every trial runs it immediately after training. The resulting `test_f1`/`test_fpr` become the Optuna objectives (`f1`, `fpr`), while the train metrics are reported separately. Additional `test` commands (like "totally unseen" phases) are executed right after the primary test and their metrics land under `command_metrics` so you can compare secondary phases without changing the objective definition. Trial logs also capture which command names ran and which dataset lists were applied.
 - When in doubt, diff your current config against this document’s example and make sure each new spec mirrors the runtime structure.
 
@@ -359,7 +370,9 @@ Use `--annotate` to stamp the trial numbers next to every point when debugging s
 - `visuals/classifiers/<classifier_slug>/<command_key>_metrics.png` — the same plots but filtered to a single classifier type. The slug mirrors the classifier path (e.g., `river_forest_arfclassifier`) so you can jump straight to one model family without digging through command subfolders.
 - `visuals/deltas/<train_slug>_minus_<test_slug>_delta.png` — the only delta chart, comparing the first train/test pair the pipeline discovers. This focuses attention on the “primary” commands instead of generating N×M permutations.
 - `visuals/pareto/<command_slug>_pareto.png` — Pareto members plotted inside whichever command supplied the metrics (test preferred, otherwise the first command with usable values). Annotated automatically.
+- `visuals/pareto/<train_slug>_pareto.png` — the same Pareto members shown in the train command's metrics.
 - `visuals/pareto/<train_slug>_minus_<test_slug>_delta_pareto.png` — Pareto trials projected into the delta space; only written when both train and test metrics exist.
+- `visuals/scalers/...` and `visuals/pca/...` — per-scaler views and PCA-colored views (see Study Outputs).
 
 The script reads `optuna_summary.json` to determine the primary/secondary objectives (e.g., `f1` vs `fpr`). If the summary is missing—common when a study was interrupted—it scans every `trial_XXXX` folder and even parses `optuna_trials.log` to reconstruct any metrics that were logged before the crash. Metric directions fall back to the experiment config when the summary is absent, so the Pareto front stays accurate even for partial runs. By the time plotting finishes you’ll see a short log that lists every generated PNG under `optuna/visuals/`, making it easy to navigate the richer output set.
 
@@ -389,7 +402,7 @@ python src/plot_utils/aggregate_optuna_pareto.py ./experiments --f1 "(0.8, 1.0)"
 
 Rules:
 
-- Format is `--<metric_name> "(min,max)"` (tuple/list with exactly 2 numeric values).
+- Format is `--<metric_name> "(min,max)"` (tuple/list with exactly 2 numeric values), before or after the experiments directory. A filter whose name matches no metric is reported and ignored.
 - Metric names are matched case-insensitively (e.g., `--F1` and `--f1` are equivalent).
 - A trial must satisfy **all provided metric filters** to be included.
 - Filtering is applied before Pareto front computation, summary export, and model-copying.
