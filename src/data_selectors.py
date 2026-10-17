@@ -72,7 +72,7 @@ def slice_batch(batch: Any, start: int, end: int) -> Any:
         return []
 
 
-def _allocate_from_fractions(fractions: Sequence[float], total: int) -> List[int]:
+def _allocate_from_fractions(fractions: Sequence[float], total: int, rng: Any = None) -> List[int]:
     if total <= 0 or not fractions:
         return [0 for _ in fractions]
     arr = np.asarray([max(0.0, float(f)) for f in fractions], dtype=float)
@@ -81,7 +81,12 @@ def _allocate_from_fractions(fractions: Sequence[float], total: int) -> List[int
     arr = (arr / arr.sum()) * float(total)
     ints = np.floor(arr).astype(int)
     remainder = total - int(ints.sum())
-    order = np.argsort(-(arr - np.floor(arr)))
+    frac = arr - np.floor(arr)
+    if rng is not None:
+        # break ties randomly so equal shares do not always favour the first label
+        order = np.lexsort((rng.random(len(frac)), -frac))
+    else:
+        order = np.argsort(-frac, kind="stable")
     for i in range(remainder):
         idx = int(order[i % len(order)])
         ints[idx] += 1
@@ -492,7 +497,7 @@ class BalancedByLabelMixer(BaseMixer):
 
     def _compute_target_counts(self) -> List[int]:
         fractions = [self.balance_map.get(lbl, 0.0) for lbl in self.labels]
-        return _allocate_from_fractions(fractions, int(self.batch_size or 0))
+        return _allocate_from_fractions(fractions, int(self.batch_size or 0), rng=self.rng)
 
     def _take_for_label(self, label: str, need: int) -> Optional[pd.DataFrame]:
         """Take the next `need` fresh rows of `label`; None if fewer than `need` are left."""
