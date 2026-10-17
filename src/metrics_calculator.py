@@ -630,11 +630,7 @@ def accumulate_testing_metrics(entries: List[Dict[str, Any]]):
             tp = int(mal.get("TP", 0))
             fp = int(mal.get("FP", 0))
             fn = int(mal.get("FN", 0))
-            tn = sum(
-                int(pcm.get(cls, {}).get("TN", 0))
-                for cls in class_names
-                if cls.lower() not in ("malware", "malicious")
-            )
+            tn = int(mal.get("TN", 0))
             bm_counts = {"TP": tp, "FP": fp, "TN": tn, "FN": fn}
         cumul_binary_series.append(compute_binary_metrics(bm_counts))
 
@@ -675,10 +671,12 @@ def _format_per_class_table(
     lines.append(
         f"{'Class':<15} {'TP':>8} {'TN':>8} {'FP':>8} {'FN':>8} {'Acc':>8} {'Prec':>8} {'Rec':>8} {'F1':>8}"
     )
-    if "Malicious" in cum_metrics_per_class:
-        m = cum_metrics_per_class["Malicious"]
+    # Malicious first, then the other classes (one-vs-rest counts per class)
+    ordered = sorted(cum_metrics_per_class, key=lambda cls: (cls != "Malicious", cls))
+    for cls in ordered:
+        m = cum_metrics_per_class[cls]
         lines.append(
-            f"{'Malicious':<15} {int(m.get('TP', 0)):8d} {int(m.get('TN', 0)):8d} {int(m.get('FP', 0)):8d} {int(m.get('FN', 0)):8d} "
+            f"{cls:<15} {int(m.get('TP', 0)):8d} {int(m.get('TN', 0)):8d} {int(m.get('FP', 0)):8d} {int(m.get('FN', 0)):8d} "
             f"{m.get('accuracy', 0.0):8.4f} {m.get('precision', 0.0):8.4f} {m.get('recall', 0.0):8.4f} {m.get('f1', 0.0):8.4f}"
         )
     return lines
