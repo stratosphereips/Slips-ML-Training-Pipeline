@@ -219,6 +219,9 @@ optuna:
           datasets:
             type: categorical
             multiple: true
+            # 1..5 of 21 datasets: 27,895 subsets (all subsets would be ~2M)
+            min: 1
+            max: 5
             choices:
               - "001"
               - "008"

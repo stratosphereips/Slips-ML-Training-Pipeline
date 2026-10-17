@@ -2,6 +2,7 @@
 import itertools
 import json
 import sys
+import threading
 import time
 import traceback
 from copy import deepcopy
@@ -42,7 +43,10 @@ class OptunaOptimizer:
             self._log_optuna(f"Using pruner {self.pruner.__class__.__name__}")
         self.trials_log = []
         self.git_commit = git_commit
-        self.seed = int(self.base_config.get("seed", 1111))
+        self.seed = int(self.base_config.get("seed", self.base_config.get("random_seed", 1111)))
+        # encoded `multiple: true` choices, built once per parameter (the power set can be huge)
+        self._encoded_choices = {}
+        self._encoded_choices_lock = threading.Lock()
 
     def _log_optuna(self, msg):
         from datetime import datetime
@@ -121,10 +125,16 @@ class OptunaOptimizer:
         if ptype == "categorical":
             choices = spec["choices"]
             if spec.get("multiple"):
-                combos = self._build_combinations(choices, spec.get("min"), spec.get("max"))
-                if not combos:
-                    raise ValueError(f"No combinations available for parameter '{name}'")
-                encoded_choices = ["|".join(combo) for combo in combos]
+                # Build the encoded combinations once and pass the same tuple to every trial;
+                # rebuilding the list per trial made Optuna keep a fresh copy for each trial.
+                with self._encoded_choices_lock:
+                    encoded_choices = self._encoded_choices.get(name)
+                    if encoded_choices is None:
+                        combos = self._build_combinations(choices, spec.get("min"), spec.get("max"))
+                        if not combos:
+                            raise ValueError(f"No combinations available for parameter '{name}'")
+                        encoded_choices = tuple("|".join(combo) for combo in combos)
+                        self._encoded_choices[name] = encoded_choices
                 picked = trial.suggest_categorical(name, encoded_choices)
                 return picked.split("|") if picked else []
             return trial.suggest_categorical(name, choices)
