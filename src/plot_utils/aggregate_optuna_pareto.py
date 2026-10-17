@@ -479,6 +479,10 @@ def aggregate_optuna_pareto(
     if not bundles:
         raise RuntimeError("No Optuna experiment runs found with usable test command signatures")
 
+    known_metrics = {name for bundle in bundles for name in bundle.metric_names}
+    for name in sorted(set(metric_filters) - known_metrics):
+        print(f"[WARN] Metric filter '--{name}' matches no metric ({sorted(known_metrics)}); it is ignored")
+
     grouped: Dict[str, Dict] = {}
     for bundle in bundles:
         for command in bundle.test_commands:
@@ -647,8 +651,28 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="Disable point annotations in Pareto plots",
     )
-    args, extra_args = parser.parse_known_args(argv)
-    args.metric_filters = _parse_metric_filters(extra_args)
+    # Pull out the free-form "--<metric> '(min,max)'" pairs first; with parse_known_args the
+    # range value could otherwise be taken as the positional experiments_dir.
+    argv = list(sys.argv[1:] if argv is None else argv)
+    known_flags = {"--no-annotate", "-h", "--help"}
+    rest: List[str] = []
+    filter_args: List[str] = []
+    idx = 0
+    while idx < len(argv):
+        token = argv[idx]
+        flag = token.split("=", 1)[0]
+        if token.startswith("--") and flag not in known_flags:
+            if "=" in token:
+                filter_args.extend(token.split("=", 1))
+                idx += 1
+            else:
+                filter_args.extend(argv[idx:idx + 2])
+                idx += 2
+            continue
+        rest.append(token)
+        idx += 1
+    args = parser.parse_args(rest)
+    args.metric_filters = _parse_metric_filters(filter_args)
     return args
 
 
