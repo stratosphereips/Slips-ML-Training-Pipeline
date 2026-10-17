@@ -126,28 +126,6 @@ def plot_counts_series(
     plt.tight_layout(rect=[0, 0, 1, 0.95])
     plt.savefig(outpath)
     plt.close()
-    # print(f"[SAVED] {outpath}")
-
-
-def get_stepping_sizes(entries, batch_count, size_key):
-    labels = []
-    if batch_count < 10:
-        for i, entry in enumerate(entries):
-            labels.append(f"{i}\n{entry.get(size_key, 0)}")
-        return labels
-
-    if batch_count <= 20:
-        return [str(i) for i in range(batch_count)]
-    else:
-        max_labels = 15
-        step = max(1, batch_count // max_labels)
-        labels = []
-        for i, entry in enumerate(entries):
-            if i % step == 0 or i == batch_count - 1:
-                labels.append(str(i))
-            else:
-                labels.append("")
-        return labels
 
 
 def sliding_window_aggregated(
@@ -224,7 +202,6 @@ def plot_comparison_metrics(
     batch_metrics_multi_training,
     cumul_metrics_multi_training,
     base_dir,
-    stepping_total_sizes,
     cumulative_total_sizes,
     batch_count,
 ):
@@ -278,7 +255,6 @@ def plot_comparison_metrics_for_series(
     base_dir,
     xvals,
     start_index,
-    batch_count,
     name_prefix,
 ):
     from base_utils import (
@@ -488,7 +464,6 @@ def main():
         raise FileNotFoundError(f"Log file not found: {file_path}")
 
     folder_dir = ensure_dir(os.path.join(base_dir, "training", args.exp))
-    # print(f"[INFO] Output folder: {folder_dir}")
 
     entries = read_training_batches(file_path)
     if not entries:
@@ -532,10 +507,7 @@ def main():
     def get_dir(dt):
         if dt == "validation" and validation_dir is not None:
             return validation_dir
-        elif dt == "training":
-            return train_dir
-        else:
-            return train_dir
+        return train_dir
 
     class_names = list(entries[0]["training_predicted"].keys())
     batch_count = len(entries)
@@ -601,27 +573,16 @@ def main():
             xlabel="Batch",
         )
 
-    # stepping sizes
-    if has_validation_data:
-        cumulative_sizes = []
-        total = 0
-        for entry in entries:
+    # cumulative sample counts (x axis of the aggregated plots)
+    cumulative_sizes = []
+    total = 0
+    for entry in entries:
+        if has_validation_data:
             size = entry.get("testing_size", 0)
-            total += size
-            cumulative_sizes.append(total)
-        stepping_sizes = get_stepping_sizes(
-            entries, batch_count, "testing_size"
-        )
-    else:
-        cumulative_sizes = []
-        total = 0
-        for entry in entries:
+        else:
             size = entry.get("training_size", entry.get("testing_size", 0))
-            total += size
-            cumulative_sizes.append(total)
-        stepping_sizes = get_stepping_sizes(
-            entries, batch_count, "training_size"
-        )
+        total += size
+        cumulative_sizes.append(total)
 
     # malware & accuracy plots
     plot_malware_metrics(
@@ -670,9 +631,7 @@ def main():
     )
 
     # sliding windows and last-k plots
-    def make_lastk_and_plot(
-        k, per_class_batch, multi_batch, base_dir, stepping_sizes_all, label
-    ):
+    def make_lastk_and_plot(k, per_class_batch, base_dir, label):
         series_per_class_k, series_multi_k, start_idx = (
             sliding_window_aggregated(
                 per_class_batch, class_names, k, trim_to_full_window=True
@@ -682,7 +641,7 @@ def main():
             print(
                 f"[INFO] Not enough batches for last-{k} ({label}), skipping."
             )
-            return None, None, None
+            return None, None
         n = len(per_class_batch)
         xvals = list(range(start_idx, n))
         folder = os.path.join(base_dir, f"last{k}")
@@ -707,33 +666,13 @@ def main():
             title=f"Aggregated class counts (last-{k})\n({label})",
             xlabels=[str(i) for i in xvals],
         )
-        return series_per_class_k, series_multi_k, start_idx
+        return series_multi_k, start_idx
 
     label_val = "validation" if has_validation_data else "training"
-    last5_per_class_val, last5_multi_val, last5_start = make_lastk_and_plot(
-        5,
-        batch_metrics_per_class,
-        batch_metrics_multi,
-        get_dir("validation" if has_validation_data else "training"),
-        stepping_sizes,
-        label_val,
-    )
-    last10_per_class_val, last10_multi_val, last10_start = make_lastk_and_plot(
-        10,
-        batch_metrics_per_class,
-        batch_metrics_multi,
-        get_dir("validation" if has_validation_data else "training"),
-        stepping_sizes,
-        label_val,
-    )
-    last20_per_class_val, last20_multi_val, last20_start = make_lastk_and_plot(
-        20,
-        batch_metrics_per_class,
-        batch_metrics_multi,
-        get_dir("validation" if has_validation_data else "training"),
-        stepping_sizes,
-        label_val,
-    )
+    main_dir = get_dir(label_val)
+    last5_multi_val, last5_start = make_lastk_and_plot(5, batch_metrics_per_class, main_dir, label_val)
+    last10_multi_val, last10_start = make_lastk_and_plot(10, batch_metrics_per_class, main_dir, label_val)
+    last20_multi_val, last20_start = make_lastk_and_plot(20, batch_metrics_per_class, main_dir, label_val)
 
     # training-specific plots
     if has_validation_data:
@@ -743,9 +682,6 @@ def main():
             size = entry.get("training_size", 0)
             total_training += size
             cumulative_training_sizes.append(total_training)
-        stepping_training_sizes = get_stepping_sizes(
-            entries, batch_count, "training_size"
-        )
 
         plot_malware_metrics(
             batch_metrics_multi_training,
@@ -790,35 +726,15 @@ def main():
             xlabel="Aggregated samples",
         )
 
-        last5_per_class_train, last5_multi_train, last5_start_train = (
-            make_lastk_and_plot(
-                5,
-                batch_metrics_per_class_training,
-                batch_metrics_multi_training,
-                get_dir("training"),
-                stepping_training_sizes,
-                "training",
-            )
+        train_dir_ = get_dir("training")
+        last5_multi_train, last5_start_train = make_lastk_and_plot(
+            5, batch_metrics_per_class_training, train_dir_, "training"
         )
-        last10_per_class_train, last10_multi_train, last10_start_train = (
-            make_lastk_and_plot(
-                10,
-                batch_metrics_per_class_training,
-                batch_metrics_multi_training,
-                get_dir("training"),
-                stepping_training_sizes,
-                "training",
-            )
+        last10_multi_train, last10_start_train = make_lastk_and_plot(
+            10, batch_metrics_per_class_training, train_dir_, "training"
         )
-        last20_per_class_train, last20_multi_train, last20_start_train = (
-            make_lastk_and_plot(
-                20,
-                batch_metrics_per_class_training,
-                batch_metrics_multi_training,
-                get_dir("training"),
-                stepping_training_sizes,
-                "training",
-            )
+        last20_multi_train, last20_start_train = make_lastk_and_plot(
+            20, batch_metrics_per_class_training, train_dir_, "training"
         )
 
         # comparison x-axis
@@ -826,15 +742,6 @@ def main():
             entry.get("training_size", 0) + entry.get("testing_size", 0)
             for entry in entries
         ]
-        if batch_count < 10:
-            stepping_total_sizes = [
-                f"{i}\n{size}" for i, size in enumerate(batch_total_sizes)
-            ]
-        else:
-            stepping_total_sizes = get_stepping_sizes(
-                [{"dummy": 0}] * batch_count, batch_count, "dummy"
-            )
-
         cumulative_total_sizes = []
         total_so_far = 0
         for size in batch_total_sizes:
@@ -847,7 +754,6 @@ def main():
             batch_metrics_multi_training,
             cumul_metrics_multi_training,
             comparison_dir,
-            stepping_total_sizes,
             cumulative_total_sizes,
             batch_count,
         )
@@ -903,7 +809,6 @@ def main():
                     base,
                     xvals,
                     start,
-                    common_len,
                     kname,
                 )
 
@@ -941,7 +846,6 @@ def main():
     summary_path = os.path.join(folder_dir, "summary.txt")
     with open(summary_path, "w") as f:
         f.write(summary_txt)
-    # print(f"[SAVED] {summary_path}")
     print(summary_txt)
 
 

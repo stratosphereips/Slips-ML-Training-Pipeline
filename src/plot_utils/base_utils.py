@@ -1,13 +1,9 @@
 # base_utils.py
 import os
-import sys
 from typing import Dict, List, Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
-
-# Ensure src/ is in sys.path for imports
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # ============================================================================
 # METRIC DISPLAY CONFIGURATIONS
@@ -21,11 +17,6 @@ MALWARE_PLOT_METRICS = {
     "F1": "f1",
     "Accuracy": "accuracy",  # This IS benign-malicious accuracy
     "Total Error Rate": "error_rate",
-}
-
-# Metrics for accuracy-only plots
-ACCURACY_PLOT_METRICS = {
-    "Accuracy": "accuracy",
 }
 
 # Metrics for train/val comparison plots

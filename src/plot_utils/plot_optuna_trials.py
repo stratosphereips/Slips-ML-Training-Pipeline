@@ -59,8 +59,6 @@ class TrialRecord:
     inner_classifier: Optional[str]
     scaler: Optional[str]
     pca_value: Optional[float]
-    train: MetricPair
-    test: MetricPair
     metrics_path: Optional[Path]
     per_command: Dict[str, MetricPair]
 
@@ -106,12 +104,6 @@ def _is_number(value) -> bool:
         return True
     except (TypeError, ValueError):
         return False
-
-
-def _metric_candidates(name: str) -> List[str]:
-    normalized = _normalize_metric_name(name)
-    collapsed = normalized.replace("_", "")
-    return [name, normalized, collapsed]
 
 
 def _resolve_metric_value(payload: Dict, metric_name: str, prefix: Optional[str]) -> Optional[float]:
@@ -596,8 +588,6 @@ def _build_trial_record(
     metric_names: Sequence[str],
     payload: Dict,
     command_specs: Sequence[CommandSpec],
-    train_key: str,
-    test_key: str,
 ) -> Optional[TrialRecord]:
     if not isinstance(payload, dict):
         return None
@@ -628,8 +618,6 @@ def _build_trial_record(
         inner_classifier=inner_classifier,
         scaler=scaler,
         pca_value=pca_value,
-        train=per_command.get(train_key, (None, None)),
-        test=per_command.get(test_key, (None, None)),
         metrics_path=files.metrics_path,
         per_command=per_command,
     )
@@ -1161,9 +1149,6 @@ def generate_optuna_trial_plots(
                 return spec
         return None
 
-    if not command_specs:
-        raise RuntimeError("Unable to determine any commands for plotting")
-
     train_spec = pick_spec("train") or command_specs[0]
     test_spec = pick_spec("test")
     if test_spec is None and len(command_specs) > 1:
@@ -1192,24 +1177,15 @@ def generate_optuna_trial_plots(
             continue
         if metric in minimize_hints:
             directions.append("minimize")
-        elif DEFAULT_DIRECTIONS:
-            directions.append(DEFAULT_DIRECTIONS[idx % len(DEFAULT_DIRECTIONS)])
         else:
-            directions.append("maximize")
+            directions.append(DEFAULT_DIRECTIONS[idx % len(DEFAULT_DIRECTIONS)])
 
     records: List[TrialRecord] = []
     for files in trial_files:
         payload = _load_trial_payload(files, log_metrics, payload_cache)
         if payload is None:
             continue
-        record = _build_trial_record(
-            files,
-            metric_names,
-            payload,
-            command_specs,
-            train_spec.key,
-            test_spec.key if test_spec else train_spec.key,
-        )
+        record = _build_trial_record(files, metric_names, payload, command_specs)
         if record:
             records.append(record)
     if not records:
@@ -1396,28 +1372,6 @@ def generate_optuna_trial_plots(
                 title=f"Pareto front ({target_spec.display_name} metrics)",
             ):
                 outputs.append(target_front)
-
-        # If there is another test-like command distinct from the Pareto source, also plot its Pareto
-        if test_spec and target_spec and test_spec.key != target_spec.key:
-            alt_pareto_metrics = _collect_phase_metrics(records, test_spec.key)
-            if alt_pareto_metrics:
-                alt_front = _pareto_front(alt_pareto_metrics, directions)
-                alt_trials = {record.number for record, _, _ in alt_front}
-                alt_front_records = [r for r in records if r.number in alt_trials]
-                if alt_front_records:
-                    alt_front_path = pareto_dir / f"{test_spec.folder_name}_pareto.png"
-                    if _scatter_points(
-                        alt_front_records,
-                        test_spec.key,
-                        test_spec.display_name,
-                        metric_names,
-                        colors,
-                        markers,
-                        alt_front_path,
-                        annotate=True,
-                        title=f"Pareto front ({test_spec.display_name} metrics)",
-                    ):
-                        outputs.append(alt_front_path)
 
         if delta_outputs_generated and test_spec:
             delta_front = (

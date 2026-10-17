@@ -15,23 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
-try:
-    import yaml
-
-    def _yaml_load(path: Path) -> Dict:
-        with path.open("r") as handle:
-            data = yaml.safe_load(handle)
-        return data or {}
-
-except ImportError:
-    from ruamel.yaml import YAML
-
-    _YAML = YAML(typ="safe")
-
-    def _yaml_load(path: Path) -> Dict:
-        with path.open("r") as handle:
-            data = _YAML.load(handle)
-        return data or {}
+import yaml
 
 try:
     from .base_utils import ensure_dir  # type: ignore
@@ -59,12 +43,12 @@ class TrialEnvelope:
     record: pot.TrialRecord
     trial_dir: Path
     command_key: str
-    command_label: str
     command_signature_payload: Dict
 
 
 def _read_yaml(path: Path) -> Dict:
-    return _yaml_load(path)
+    with path.open("r") as handle:
+        return yaml.safe_load(handle) or {}
 
 
 def _normalize_dataset_values(values: Sequence) -> List[str]:
@@ -216,24 +200,6 @@ def _resolve_metric_names_and_directions(
     return metric_names, directions, fallback_config
 
 
-def _pick_specs(command_specs: Sequence[pot.CommandSpec]) -> Tuple[pot.CommandSpec, Optional[pot.CommandSpec], pot.CommandSpec]:
-    def pick_spec(command_type: str) -> Optional[pot.CommandSpec]:
-        for spec in command_specs:
-            if spec.command_type == command_type:
-                return spec
-        return None
-
-    train_spec = pick_spec("train") or command_specs[0]
-    test_spec = pick_spec("test")
-    if test_spec is None and len(command_specs) > 1:
-        for candidate in command_specs:
-            if candidate.key != train_spec.key:
-                test_spec = candidate
-                break
-    pareto_source = test_spec or train_spec
-    return train_spec, test_spec, pareto_source
-
-
 def _parse_experiment_bundle(exp_dir: Path) -> Optional[ExperimentBundle]:
     optuna_dir = exp_dir / "optuna"
     if not optuna_dir.is_dir():
@@ -270,7 +236,6 @@ def _parse_experiment_bundle(exp_dir: Path) -> Optional[ExperimentBundle]:
         return None
 
     command_specs = pot._load_commands_spec(trial_files, fallback_config) or pot._default_command_specs()
-    train_spec, test_spec, _pareto_source = _pick_specs(command_specs)
     test_commands = _extract_test_commands(command_specs, trial_files, fallback_config)
     if not test_commands:
         print(f"[WARN] Skipping {exp_dir.name}: no test command signature detected")
@@ -281,14 +246,7 @@ def _parse_experiment_bundle(exp_dir: Path) -> Optional[ExperimentBundle]:
         payload = pot._load_trial_payload(files, log_metrics, payload_cache)
         if payload is None:
             continue
-        record = pot._build_trial_record(
-            files,
-            metric_names,
-            payload,
-            command_specs,
-            train_spec.key,
-            test_spec.key if test_spec else train_spec.key,
-        )
+        record = pot._build_trial_record(files, metric_names, payload, command_specs)
         if record:
             records.append(record)
 
@@ -353,7 +311,7 @@ def _safe_copytree(src: Path, dst: Path) -> Path:
         suffix += 1
 
 
-def _build_envelopes(bundle: ExperimentBundle, command_key: str, command_label: str, command_signature_payload: Dict) -> List[TrialEnvelope]:
+def _build_envelopes(bundle: ExperimentBundle, command_key: str, command_signature_payload: Dict) -> List[TrialEnvelope]:
     envelopes: List[TrialEnvelope] = []
     for record in bundle.records:
         trial_dir = record.metrics_path.parent if record.metrics_path else (bundle.optuna_dir / f"trial_{record.number:04d}")
@@ -363,7 +321,6 @@ def _build_envelopes(bundle: ExperimentBundle, command_key: str, command_label: 
                 record=record,
                 trial_dir=trial_dir,
                 command_key=command_key,
-                command_label=command_label,
                 command_signature_payload=command_signature_payload,
             )
         )
@@ -381,8 +338,6 @@ def _to_plot_records(envelopes: Sequence[TrialEnvelope], unified_key: str = "agg
                 inner_classifier=env.record.inner_classifier,
                 scaler=env.record.scaler,
                 pca_value=env.record.pca_value,
-                train=(None, None),
-                test=(None, None),
                 metrics_path=env.record.metrics_path,
                 per_command={unified_key: pair},
             )
@@ -532,7 +487,6 @@ def aggregate_optuna_pareto(
                 _build_envelopes(
                     member["bundle"],
                     member["command_key"],
-                    member["command_label"],
                     command_signature_payload,
                 )
             )

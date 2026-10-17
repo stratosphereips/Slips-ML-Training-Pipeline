@@ -59,7 +59,6 @@ def plot_counts_series(
     series_of_dicts, outpath, title, xlabels=None, xlabel="Index"
 ):
     if series_of_dicts is None or not series_of_dicts:
-        # print("[INFO] No data to plot for", title)
         return
     classes = list(next(iter(series_of_dicts)).keys())
     values_per_class = {
@@ -98,7 +97,6 @@ def plot_counts_series(
     plt.tight_layout(rect=[0, 0, 1, 0.95])
     plt.savefig(outpath)
     plt.close()
-    # print(f"[SAVED] {outpath}")
 
 
 def plot_confusion_matrix_from_final(final_per_class, outpath):
@@ -123,7 +121,6 @@ def plot_confusion_matrix_from_final(final_per_class, outpath):
     plt.tight_layout()
     plt.savefig(outpath)
     plt.close()
-    # print(f"[SAVED] {outpath}")
 
 
 def main():
@@ -184,7 +181,6 @@ def main():
         cumulative_total_flows,
     ) = accumulate_testing_metrics(entries)
     n = len(cumul_multi_series)
-    # print(f"[INFO] Building plots for {n} snapshots")
 
     # aggregated class counts
     xlabels = (
@@ -286,7 +282,6 @@ def main():
     with open(summary_path, "w") as f:
         f.write(summary_text)
 
-    # print(f"[SAVED] {summary_path}")
     print(summary_text)
 
 
