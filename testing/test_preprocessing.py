@@ -11,12 +11,14 @@ class DummyTransformer:
 
     def __init__(self):
         self.fitted = False
+        self.fit_called = 0
         self.partial_fit_called = 0
         self.transform_called = 0
         self.stored_X = None
 
     def fit(self, X, y=None):
         self.fitted = True
+        self.fit_called += 1
         self.stored_X = X
         return self
 
@@ -36,10 +38,12 @@ class DummyTransformerNoPartialFit:
 
     def __init__(self):
         self.fitted = False
+        self.fit_called = 0
         self.stored_X = None
 
     def fit(self, X, y=None):
         self.fitted = True
+        self.fit_called += 1
         self.stored_X = X
         return self
 
@@ -148,6 +152,8 @@ class TestPreprocessingWrapper:
         wrapper.partial_fit(X, y)
 
         assert transformer.fitted is True
+        assert transformer.fit_called == 1
+        assert transformer.partial_fit_called == 0
         assert wrapper.is_fitted["step1"] is True
         assert wrapper._has_been_fitted_once is True
         np.testing.assert_array_equal(transformer.stored_X, X)
@@ -155,16 +161,18 @@ class TestPreprocessingWrapper:
     def test_partial_fit_subsequent_calls_use_partial_fit(self, sample_data):
         """Test partial_fit uses partial_fit() method on subsequent calls."""
         X, y = sample_data
+        X2 = X * 2
         transformer = DummyTransformer()
         wrapper = PreprocessingWrapper(steps=[("step1", transformer)])
 
         wrapper.partial_fit(X, y)
-        assert transformer.partial_fit_called == 0  # First call uses fit()
+        assert transformer.fit_called == 1  # First call uses fit()
+        assert transformer.partial_fit_called == 0
 
-        wrapper.partial_fit(X, y)
-        assert (
-            transformer.partial_fit_called == 1
-        )  # Second call uses partial_fit()
+        wrapper.partial_fit(X2, y)
+        assert transformer.fit_called == 1  # fit is not called again
+        assert transformer.partial_fit_called == 1  # Second call uses partial_fit()
+        assert transformer.stored_X is X2  # the new batch reached partial_fit
 
     def test_partial_fit_multiple_steps(self, sample_data):
         """Test partial_fit processes all steps in sequence."""
@@ -201,11 +209,13 @@ class TestPreprocessingWrapper:
 
         wrapper = PreprocessingWrapper(steps=[("step1", transformer)])
 
-        # Should not fail because transformer has partial_fit
-        try:
-            wrapper.partial_fit(X, y)
-        except Exception as e:
-            pytest.fail(f"partial_fit raised an unexpected exception: {e}")
+        # The first call falls back to partial_fit because fit is missing
+        wrapper.partial_fit(X, y)
+        assert transformer.partial_fit_called == 1
+        assert wrapper.is_fitted["step1"] is True
+
+        wrapper.partial_fit(X, y)
+        assert transformer.partial_fit_called == 2
 
     def test_partial_fit_error_propagation(self, sample_data):
         """Test partial_fit propagates errors from transformers."""
@@ -234,9 +244,9 @@ class TestPreprocessingWrapper:
         # Step1: X * 2, Step2: (X * 2) * 2 = X * 4
         expected = X * 4
         np.testing.assert_array_equal(result, expected)
-        # Each transformer runs during partial_fit (to feed downstream steps) and again here.
-        assert transformer1.transform_called >= 1
-        assert transformer2.transform_called >= 1
+        # Each transformer runs once during partial_fit (to feed downstream steps) and once here.
+        assert transformer1.transform_called == 2
+        assert transformer2.transform_called == 2
 
     def test_transform_unfitted_step_raises_error(self, sample_data):
         """Test transform raises error if any step not fitted."""
@@ -417,24 +427,6 @@ class TestPreprocessingWrapper:
         # Results should match
         np.testing.assert_array_equal(result1, result2)
 
-    def test_integration_multiple_partial_fits(self, sample_data):
-        """Integration test: multiple partial_fit calls."""
-        X1, y1 = sample_data
-        X2 = sample_data[0] * 2
-        y2 = sample_data[1]
-
-        transformer = DummyTransformer()
-        wrapper = PreprocessingWrapper(steps=[("step1", transformer)])
-
-        wrapper.partial_fit(X1, y1)
-        first_partial_count = transformer.partial_fit_called
-
-        wrapper.partial_fit(X2, y2)
-        second_partial_count = transformer.partial_fit_called
-
-        # Should have called partial_fit once on second call
-        assert second_partial_count == first_partial_count + 1
-
     def test_integration_add_step_and_refit(self, sample_data):
         """Integration test: add step, fit all, transform."""
         X, y = sample_data
@@ -454,32 +446,6 @@ class TestPreprocessingWrapper:
         result = wrapper.transform(X)
         assert result.shape == X.shape
 
-    def test_partial_fit_calls_fit_first_time(self, sample_data):
-        """
-        Test that fit is called on the first partial_fit and not partial_fit.
-        """
-        X, y = sample_data
-        transformer = DummyTransformer()
-        wrapper = PreprocessingWrapper(steps=[("step1", transformer)])
-
-        wrapper.partial_fit(X, y)
-
-        assert transformer.fitted is True
-        assert transformer.partial_fit_called == 0
-
-    def test_partial_fit_calls_partial_fit_after_first(self, sample_data):
-        """
-        Test that partial_fit is called on subsequent partial_fit calls.
-        """
-        X, y = sample_data
-        transformer = DummyTransformer()
-        wrapper = PreprocessingWrapper(steps=[("step1", transformer)])
-
-        wrapper.partial_fit(X, y)
-        wrapper.partial_fit(X, y)
-
-        assert transformer.partial_fit_called == 1
-
     def test_partial_fit_uses_fit_if_partial_fit_not_available(
         self, sample_data
     ):
@@ -491,10 +457,11 @@ class TestPreprocessingWrapper:
         wrapper = PreprocessingWrapper(steps=[("step1", transformer)])
 
         wrapper.partial_fit(X, y)
+        assert transformer.fit_called == 1
         wrapper.partial_fit(X, y)
 
-        # DummyTransformerNoPartialFit does not have partial_fit, so fit should be called again
-        assert transformer.fitted is True
+        # DummyTransformerNoPartialFit does not have partial_fit, so fit is called again
+        assert transformer.fit_called == 2
         assert transformer.stored_X is X
 
     def test_partial_fit_multiple_steps_calls_fit_and_partial_fit(
@@ -529,8 +496,9 @@ class TestPreprocessingWrapper:
         wrapper.partial_fit(X, y)
         wrapper.partial_fit(X, y)
 
+        assert t1.fit_called == 1
         assert t1.partial_fit_called == 1
-        assert t2.fitted is True  # fit called again
+        assert t2.fit_called == 2  # no partial_fit -> fit called again
 
     def test_partial_fit_sets_is_fitted_flag(self, sample_data):
         """
@@ -558,6 +526,7 @@ class TestPreprocessingWrapper:
         wrapper.partial_fit(X, y)
         wrapper.partial_fit(X, y)
 
+        assert transformer.fit_called == 1
         assert transformer.partial_fit_called == 2
 
     def test_partial_fit_updates_scaler_mean(self, sample_data):
@@ -626,24 +595,6 @@ class TestPreprocessingWrapper:
         assert wrapper.step_filename_template == "{name}.bin"
 
     # ========== Updated Save Tests ==========
-    def test_save_without_base_path_uses_default(self, temp_dir, sample_data):
-        """Test save uses base_models_dir/experiment_name/preprocessing when base_path is None."""
-        X, y = sample_data
-        transformer = DummyTransformer()
-
-        wrapper = PreprocessingWrapper(
-            steps=[("scaler", transformer)],
-            experiment_name="test_exp",
-            base_models_dir=temp_dir,
-        )
-        wrapper.partial_fit(X, y)
-        wrapper.save()  # No base_path argument
-
-        expected_path = (
-            Path(temp_dir) / "test_exp" / "preprocessing" / "scaler.bin"
-        )
-        assert expected_path.exists()
-
     def test_save_with_explicit_base_path(self, temp_dir, sample_data):
         """Test save uses provided base_path when given."""
         X, y = sample_data
@@ -676,10 +627,8 @@ class TestPreprocessingWrapper:
         assert (base_path / "encoder.pkl").exists()
         assert not (base_path / "scaler.bin").exists()
 
-    def test_save_creates_files_with_default_template(
-        self, temp_dir, sample_data
-    ):
-        """Test save creates .bin files by default."""
+    def test_save_without_base_path_uses_default(self, temp_dir, sample_data):
+        """save() without base_path writes <base_models_dir>/<experiment>/preprocessing/<name>.bin."""
         X, y = sample_data
         transformer1 = DummyTransformer()
         transformer2 = DummyTransformer()
@@ -743,35 +692,6 @@ class TestPreprocessingWrapper:
         wrapper2.load(step_paths)
 
         assert wrapper2.is_fitted["scaler"] is True
-
-    def test_load_uses_step_filename_template(self, temp_dir, sample_data):
-        """Test load respects custom step_filename_template."""
-        X, y = sample_data
-        transformer1 = DummyTransformer()
-        transformer2 = DummyTransformer()
-
-        # Save with custom template
-        wrapper1 = PreprocessingWrapper(
-            steps=[("scaler", transformer1), ("encoder", transformer2)],
-            base_models_dir=temp_dir,
-            experiment_name="test_exp",
-            step_filename_template="{name}.pkl",
-        )
-        wrapper1.partial_fit(X, y)
-        wrapper1.save()
-
-        # Load with same custom template
-        wrapper2 = PreprocessingWrapper(
-            steps=[("scaler", None), ("encoder", None)],
-            base_models_dir=temp_dir,
-            experiment_name="test_exp",
-            step_filename_template="{name}.pkl",
-        )
-        step_paths = build_step_path_map(wrapper2)
-        wrapper2.load(step_paths)
-
-        assert wrapper2.is_fitted["scaler"] is True
-        assert wrapper2.is_fitted["encoder"] is True
 
     def test_load_fails_with_wrong_template(self, temp_dir, sample_data):
         """Test load fails if using wrong step_filename_template."""
