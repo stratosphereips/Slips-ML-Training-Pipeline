@@ -7,7 +7,7 @@
 #   - Defaults unlabeled flows to BENIGN.
 #   - Stores index in cache/ directory for large files (>50k valid flows) and reloads automatically.
 
-from .commons import BENIGN, MALICIOUS, BACKGROUND
+from .commons import BENIGN, MALICIOUS, BACKGROUND, is_malicious_label
 from .conn_normalizer import ConnToSlipsConverter
 import random
 from pathlib import Path
@@ -19,6 +19,10 @@ import fcntl
 import os
 import tempfile
 from functools import lru_cache
+
+# Bump when the index (valid rows / label mapping) changes, so stale caches are rebuilt.
+# 2: "MAL" only counts at the start of a word (Normal/Anomaly are no longer malicious).
+INDEX_CACHE_VERSION = 2
 
 
 class ZeekDataset:
@@ -133,7 +137,8 @@ class ZeekDataset:
                     ) as f:
                         data = json.load(f)
                 if (
-                    data["__file_size"] == file_stat.st_size
+                    data.get("__version") == INDEX_CACHE_VERSION
+                    and data["__file_size"] == file_stat.st_size
                     and data["__mtime"] == file_stat.st_mtime
                 ):
                     self.headers = data["headers"]
@@ -182,11 +187,7 @@ class ZeekDataset:
                     ):
                         idx += 1
                         continue
-                    if (
-                        lab_up == str(MALICIOUS).upper()
-                        or "MAL" in lab_up
-                        or lab_up == "1"
-                    ):
+                    if is_malicious_label(lab_up):
                         mapped = MALICIOUS
                     else:
                         mapped = BENIGN
@@ -212,6 +213,7 @@ class ZeekDataset:
         # persist if large enough
         if len(valid_indices) > self.persist_cache_threshold:
             payload = {
+                "__version": INDEX_CACHE_VERSION,
                 "__file_size": file_stat.st_size,
                 "__mtime": file_stat.st_mtime,
                 "headers": headers,
@@ -234,7 +236,8 @@ class ZeekDataset:
                         ) as existing_f:
                             existing = json.load(existing_f)
                         if (
-                            existing.get("__file_size") == file_stat.st_size
+                            existing.get("__version") == INDEX_CACHE_VERSION
+                            and existing.get("__file_size") == file_stat.st_size
                             and existing.get("__mtime") == file_stat.st_mtime
                         ):
                             return

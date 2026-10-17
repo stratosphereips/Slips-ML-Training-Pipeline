@@ -12,7 +12,7 @@ import traceback
 from typing import Iterable, List, Optional, Tuple, Union
 
 from .conn_normalizer import ConnToSlipsConverter
-from .commons import BENIGN, MALICIOUS
+from .commons import BENIGN, MALICIOUS, is_malicious_label
 
 
 class FeatureExtraction:
@@ -187,9 +187,9 @@ class FeatureExtraction:
     def _extract_labels(self, df: pd.DataFrame) -> pd.Series:
         """
         Extract label column from df, mapping into BENIGN/MALICIOUS.
-        Prefer ground_truth_label, detailed_ground_truth_label, label, module_labels.
-        Default to converter.default_label if missing.
-        If gt is missing, but the detailed label is malware, we assume the whole is malware.
+        A flow is MALICIOUS if any of the label columns (ground_truth_label,
+        detailed_ground_truth_label, label, module_labels, detailed_label) maps to malicious,
+        otherwise BENIGN. Default to converter.default_label if no label column exists.
         """
         label_cols = self.label_cols
         found = [c for c in label_cols if c in df.columns]
@@ -204,7 +204,7 @@ class FeatureExtraction:
             v = val.strip().upper()
             if v == "" or v == str(BENIGN).upper():
                 return BENIGN
-            if v == str(MALICIOUS).upper() or "MAL" in v or v == "1":
+            if is_malicious_label(v):
                 return MALICIOUS
             return BENIGN
 
