@@ -234,9 +234,15 @@ class BuildManager:
 
         # Log building process
         self.exp.log_event("Building classifier...")
+        seed = int(self.cfg_reader.get_random_seed())
 
         if "model" in params and isinstance(params["model"], dict):
             params = prepare_river_nested_model_params(params)
+            # Seed the nested river model too (e.g. the weak learner of ADWINBoostingClassifier),
+            # unless the config already set one.
+            inner = params.get("model")
+            if hasattr(inner, "clone") and getattr(inner, "seed", 0) is None:
+                params["model"] = inner.clone({"seed": seed})
 
         Wrapper = get_wrapper_class(spec.get("wrapper", "SKLearnClassifierWrapper"))
 
@@ -249,7 +255,6 @@ class BuildManager:
         elif cls_type:
             Cls = get_classifier_class(cls_type)
 
-            seed = int(self.cfg_reader.get_random_seed())
             # Common randomness-related parameter names
             seed_keys = ["rng", "random", "seed", "random_seed", "state", "random_state"]
             try:
