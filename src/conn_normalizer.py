@@ -99,6 +99,9 @@ class ConnToSlipsConverter:
 
     def _infer_state(self, row: Mapping[str, Any]) -> float:
         state = row.get("state", "")
+        # already normalized (0.0 / 1.0): keep it, so normalizing twice is a no-op
+        if isinstance(state, (int, float)) and not isinstance(state, bool) and state in (0, 1):
+            return float(state)
         pkts = self._safe_int(row.get("spkts", 0)) + self._safe_int(
             row.get("dpkts", 0)
         )
@@ -137,6 +140,11 @@ class ConnToSlipsConverter:
             # downstream can convert to datetime if needed
             dest = self._map.get(k)
             if dest:
+                # an empty value must not overwrite one already mapped from another key: an
+                # already-normalized flow has ground_truth_label set and an empty SLIPS 'label',
+                # which also maps to ground_truth_label
+                if dest in out and (v is None or v == ""):
+                    continue
                 out[dest] = v
             # else: ignore unknown fields
 
@@ -156,11 +164,8 @@ class ConnToSlipsConverter:
         if not out.get("ground_truth_label"):
             out["ground_truth_label"] = self.default_label
 
-        # Handle 'state' field: convert to float using _infer_state logic
-        if "state" in out:
-            out["state"] = self._infer_state(out)
-        else:
-            out["state"] = 0.0
+        # Handle 'state' field (always present after the canonical fill): convert to float
+        out["state"] = self._infer_state(out)
 
         # Coerce numeric fields safely
         for i in self._int_fields:
