@@ -313,6 +313,8 @@ class CommandExecutor:
         self.feature_extractor = feature_extractor
         self.preprocessor = preprocessor
         self.classifier_wrapper = classifier_wrapper
+        # Optuna trials save their model/steps into the trial dir instead of the shared output dir
+        self.save_artifacts = True
 
     def _ensure_command_paths(self, cmd):
         """
@@ -389,13 +391,18 @@ class CommandExecutor:
                     for key in ("TP", "FP", "FN", "TN"):
                         val_metrics[key] += int(metrics_val.get(key, 0))
 
-        self.preprocessor.save(base_path=str(cmd["paths"]["preprocessing"]))
+        self._save_artifacts(cmd)
+        self.exp.log_event(f"Successfully ending training command {cmd['name']}")
+
+    def _save_artifacts(self, cmd):
+        if not self.save_artifacts:
+            return
+        if self.cfg_reader.get_preprocessing_save_options()["save_steps"]:
+            self.preprocessor.save(base_path=str(cmd["paths"]["preprocessing"]))
         self.classifier_wrapper.save_classifier(
             path=str(cmd["paths"]["model"]),
             name=self.cfg_reader.get_model_spec().get("save_name", "classifier.bin"),
         )
-
-        self.exp.log_event(f"Successfully ending training command {cmd['name']}")
 
 
     def _run_test(self, idx, cmd, test_metrics=None):
@@ -424,11 +431,7 @@ class CommandExecutor:
 
             last_batch_metrics = logger.save_test_results(np.asarray(y), np.asarray(y_pred))
 
-        self.preprocessor.save(base_path=str(cmd["paths"]["preprocessing"]))
-        self.classifier_wrapper.save_classifier(
-            path=str(cmd["paths"]["model"]),
-            name=self.cfg_reader.get_model_spec().get("save_name", "classifier.bin"),
-        )
+        self._save_artifacts(cmd)
 
         if test_metrics is not None and last_batch_metrics:
             for key in ("TP", "FP", "FN", "TN"):
@@ -560,6 +563,12 @@ class PipelineRunner:
             self.preprocessor,
             self.classifier_wrapper,
         )
+        if optuna_dir is not None:
+            # Parallel trials would otherwise overwrite each other's logs and models in the
+            # shared <exp>/output/: keep the logs per trial and save the model/steps only once,
+            # into the trial dir (below).
+            self.exp.logs_dir = Path(optuna_dir) / "logs"
+            executor.save_artifacts = False
         trial_label = f"Optuna trial {optuna_trial.number}" if optuna_trial is not None else "Optuna trial"
         self.exp.log_event(f"Starting {trial_label}")
 
