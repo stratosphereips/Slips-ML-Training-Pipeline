@@ -133,17 +133,12 @@ def test_prepare_river_nested_model_params_instantiate(fake_module):
 # -------------------------
 # get_wrapper_class
 # -------------------------
-def test_get_wrapper_class_invalid_name(monkeypatch):
-    fake_mod = types.ModuleType("pipeline_ml_training.classifier_wrapper")
-    monkeypatch.setitem(sys.modules, "pipeline_ml_training.classifier_wrapper", fake_mod)
+def test_get_wrapper_class_invalid_name():
     with pytest.raises(ValueError):
         mm.get_wrapper_class("NoWrapper")
 
 
-
-def test_get_mixer_class_unknown(monkeypatch):
-    fake_mixers = types.ModuleType("pipeline_ml_training.mixers")
-    monkeypatch.setitem(sys.modules, "pipeline_ml_training.mixers", fake_mixers)
+def test_get_mixer_class_unknown():
     with pytest.raises(ValueError):
         mm.get_mixer_class("nope")
 
@@ -189,38 +184,90 @@ def test_prepare_classifier_params_resolves_metric(monkeypatch):
     assert isinstance(out["metric"], Accuracy)
 
 
-def test_prepare_classifier_params_knn_sets_bruteforce(monkeypatch):
-    import types
+def test_prepare_classifier_params_knn_uses_default_engine():
+    from river.neighbors import KNNClassifier
 
-    neighbors_mod = types.ModuleType("river.neighbors")
-
-    class BruteForce:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
-    setattr(neighbors_mod, "BruteForce", BruteForce)
-    river_mod = types.ModuleType("river")
-    river_mod.neighbors = neighbors_mod
-    monkeypatch.setitem(sys.modules, "river", river_mod)
-    monkeypatch.setitem(sys.modules, "river.neighbors", neighbors_mod)
-
-    class DummyKNN:
-        __module__ = "river.neighbors.knn_classifier"
-        __name__ = "KNNClassifier"
-
-    params = {}
-    out = mm.prepare_classifier_params(DummyKNN, params)
-    assert "optimizer" in out
-    assert isinstance(out["optimizer"], BruteForce)
-    assert "optimizer" not in params  # original dict untouched
+    params = {"n_neighbors": 3}
+    out = mm.prepare_classifier_params(KNNClassifier, params)
+    assert out == {"n_neighbors": 3}
+    assert out is not params
+    model = KNNClassifier(**out)
+    assert model.engine is None or type(model.engine).__name__ == "SWINN"
 
 
-def test_prepare_classifier_params_knn_preserves_optimizer():
-    class DummyKNN:
-        __module__ = "river.neighbors.knn_classifier"
-        __name__ = "KNNClassifier"
+# -------------------------
+# positive resolution paths (real libraries)
+# -------------------------
+@pytest.mark.parametrize(
+    "name, expected",
+    [
+        ("SklearnClassifierWrapper", "SKLearnClassifierWrapper"),
+        ("SKLearnClassifierWrapper", "SKLearnClassifierWrapper"),
+        ("RiverClassifierWrapper", "RiverClassifierWrapper"),
+    ],
+)
+def test_get_wrapper_class_resolves_builtin(name, expected):
+    assert mm.get_wrapper_class(name).__name__ == expected
 
-    sentinel = object()
-    params = {"optimizer": sentinel}
-    out = mm.prepare_classifier_params(DummyKNN, params)
-    assert out["optimizer"] is sentinel
+
+@pytest.mark.parametrize(
+    "mixer_type, expected",
+    [
+        ("sequence", "SequenceMixer"),
+        ("random", "RandomBatchesMixer"),
+        ("balanced", "BalancedByLabelMixer"),
+        ("oversampling", "BalancedByLabelWithOversamplingMixer"),
+    ],
+)
+def test_get_mixer_class_resolves_builtin(mixer_type, expected):
+    assert mm.get_mixer_class(mixer_type).__name__ == expected
+
+
+@pytest.mark.parametrize(
+    "name, module_prefix",
+    [
+        ("SGDClassifier", "sklearn.linear_model"),
+        ("ARFClassifier", "river.forest"),
+        ("HoeffdingTreeClassifier", "river.tree"),
+        ("river.ensemble.ADWINBoostingClassifier", "river.ensemble"),
+    ],
+)
+def test_get_classifier_class_short_and_dotted_names(name, module_prefix):
+    cls = mm.get_classifier_class(name)
+    assert cls.__module__.startswith(module_prefix)
+
+
+@pytest.mark.parametrize(
+    "spec, expected",
+    [
+        ("f1", "F1"),
+        ("kappa", "CohenKappa"),
+        ("accuracy", "Accuracy"),
+        ({"name": "precision"}, "Precision"),
+    ],
+)
+def test_prepare_classifier_params_resolves_real_river_metric(spec, expected):
+    from river.forest import ARFClassifier
+
+    out = mm.prepare_classifier_params(ARFClassifier, {"metric": spec})
+    assert type(out["metric"]).__name__ == expected
+
+
+def test_prepare_classifier_params_unknown_river_metric():
+    from river.forest import ARFClassifier
+
+    with pytest.raises(ValueError):
+        mm.prepare_classifier_params(ARFClassifier, {"metric": "no_such_metric"})
+
+
+def test_prepare_river_nested_model_params_short_river_name():
+    out = mm.prepare_river_nested_model_params(
+        {"model": {"type": "HoeffdingTreeClassifier", "params": {"max_depth": 7}}}
+    )
+    assert type(out["model"]).__name__ == "HoeffdingTreeClassifier"
+    assert out["model"].max_depth == 7
+
+
+def test_prepare_river_nested_model_params_unknown_short_name():
+    with pytest.raises(RuntimeError, match="not found in river modules"):
+        mm.prepare_river_nested_model_params({"model": {"type": "NoSuchRiverModel"}})

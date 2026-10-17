@@ -184,8 +184,7 @@ def prepare_river_nested_model_params(params: Any) -> Any:
         else:
             InnerCls = _find_in_modules(inner_type, river_modules)
             if InnerCls is None:
-                # try dotted path fallback — may raise ImportError
-                InnerCls = _import_from_path(inner_type)
+                raise ValueError(f"'{inner_type}' not found in river modules {river_modules}")
 
         # instantiate and return a shallow copy with the instantiated model
         out = dict(params)
@@ -210,12 +209,6 @@ def prepare_classifier_params(classifier_cls, params: Any):
     module_name = getattr(classifier_cls, "__module__", "")
     if module_name.startswith("river.") and "metric" in prepared:
         prepared["metric"] = _resolve_river_metric(prepared["metric"])
-    classifier_name = getattr(classifier_cls, "__name__", "").lower()
-    targets_knn = module_name.startswith("river.neighbors") and (
-        "knn_classifier" in module_name or classifier_name.endswith("knnclassifier")
-    )
-    if targets_knn:
-        _ensure_knn_stable_optimizer(prepared)
     return prepared
 
 
@@ -282,17 +275,6 @@ def _candidate_metric_class_names(raw_name: str):
         seen.add(cand)
         ordered.append(cand)
     return ordered
-
-
-def _ensure_knn_stable_optimizer(params: dict):
-    """Fallback to a brute-force optimizer to avoid SWINN graph corruption."""
-    if params.get("optimizer") is not None:
-        return
-    try:
-        from river.neighbors import BruteForce  # Lazy import for optional dep
-    except Exception:
-        return
-    params["optimizer"] = BruteForce()
 
 
 # -------------------------
