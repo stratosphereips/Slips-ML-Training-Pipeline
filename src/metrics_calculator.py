@@ -9,13 +9,7 @@ import numpy as np
 
 def _safe_literal_eval(raw: str):
     """Safely evaluate dict-like strings coming from logs."""
-    try:
-        return ast.literal_eval(raw)
-    except Exception:
-        try:
-            return ast.literal_eval(raw.replace("'", '"'))
-        except Exception:
-            raise
+    return ast.literal_eval(raw)
 
 
 class MetricsCalculator:
@@ -23,18 +17,6 @@ class MetricsCalculator:
 
     def __init__(self, labels: Optional[List[str]] = None):
         self.labels = labels or ["Benign", "Malicious"]
-
-    def confusion_matrix(
-        self, y_true: np.ndarray, y_pred: np.ndarray
-    ) -> Dict[str, Dict[str, int]]:
-        metrics: Dict[str, Dict[str, int]] = {}
-        for label in self.labels:
-            tp = int(np.sum((y_pred == label) & (y_true == label)))
-            fp = int(np.sum((y_pred == label) & (y_true != label)))
-            fn = int(np.sum((y_pred != label) & (y_true == label)))
-            tn = int(np.sum((y_pred != label) & (y_true != label)))
-            metrics[label] = {"TP": tp, "FP": fp, "FN": fn, "TN": tn}
-        return metrics
 
     def binary_metrics(self, counts: Dict[str, int]) -> Dict[str, float]:
         tp, fp, fn, tn = counts["TP"], counts["FP"], counts["FN"], counts["TN"]
@@ -57,23 +39,6 @@ class MetricsCalculator:
             "fnr": fnr,
             "accuracy": accuracy,
         }
-
-    def aggregate_metrics(
-        self, y_true: np.ndarray, y_pred: np.ndarray
-    ) -> Dict[str, Any]:
-        per_class = self.confusion_matrix(y_true, y_pred)
-        metrics: Dict[str, Any] = {}
-        for label, counts in per_class.items():
-            label_metrics = self.binary_metrics(counts)
-            for key, value in label_metrics.items():
-                metrics[f"{label.lower()}_{key}"] = value
-        return metrics
-
-    def overall_metrics(
-        self, y_true: np.ndarray, y_pred: np.ndarray
-    ) -> Dict[str, float]:
-        counts = self.confusion_matrix(y_true, y_pred)["Malicious"]
-        return self.binary_metrics(counts)
 
 
 _GLOBAL_CALCULATOR = MetricsCalculator(labels=["Benign", "Malicious"])
@@ -363,10 +328,6 @@ class LogMetricsParser:
     def detect_validation_split(self, entries: List[Dict[str, Any]]) -> bool:
         return any(
             ("per_class" in entry and bool(entry["per_class"]))
-            or (
-                "validation_per_class" in entry
-                and bool(entry["validation_per_class"])
-            )
             or (entry.get("testing_size", 0) > 0)
             for entry in entries
         )
@@ -502,8 +463,6 @@ def accumulate_training_metrics(
         class_name_sets.append(set(first["training_per_class"].keys()))
     if isinstance(first.get("per_class"), dict):
         class_name_sets.append(set(first["per_class"].keys()))
-    if isinstance(first.get("validation_per_class"), dict):
-        class_name_sets.append(set(first["validation_per_class"].keys()))
 
     class_names = sorted(set().union(*class_name_sets)) if class_name_sets else []
 
