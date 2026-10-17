@@ -118,7 +118,8 @@ class OptunaOptimizer:
     def _should_skip_branch(self, parent_label, key, config):
         if parent_label.endswith("classifier_params") and isinstance(key, str):
             cls = self._get_path_value(config, "model.classifier_type")
-            if cls and key != cls:
+            # branch keys may use the full dotted class name or the short class name
+            if cls and key not in (cls, str(cls).split(".")[-1]):
                 return True
         return False
 
@@ -126,9 +127,13 @@ class OptunaOptimizer:
         ptype = spec.get("type")
         name = spec.get("name") or path
         if ptype == "int":
-            return trial.suggest_int(name, spec["low"], spec["high"])
+            return trial.suggest_int(
+                name, spec["low"], spec["high"], step=spec.get("step", 1), log=spec.get("log", False)
+            )
         if ptype == "float":
-            return trial.suggest_float(name, spec["low"], spec["high"], log=spec.get("log", False))
+            return trial.suggest_float(
+                name, spec["low"], spec["high"], step=spec.get("step"), log=spec.get("log", False)
+            )
         if ptype == "categorical":
             choices = spec["choices"]
             if spec.get("multiple"):
@@ -361,15 +366,18 @@ class OptunaOptimizer:
         cls_name = model.get("classifier_type")
         params = model.get("classifier_params")
         if isinstance(params, dict) and isinstance(cls_name, str):
-            branch = None
-            if cls_name in params and isinstance(params[cls_name], dict):
-                branch = params[cls_name]
-            else:
-                short = cls_name.split(".")[-1]
-                if short in params and isinstance(params[short], dict):
-                    branch = params[short]
-            if branch is not None:
-                model["classifier_params"] = deepcopy(branch)
+            branch_key = None
+            short = cls_name.split(".")[-1]
+            for key in (cls_name, short):
+                if key in params and isinstance(params[key], dict):
+                    branch_key = key
+                    break
+            if branch_key is not None:
+                # keep the base config's fixed params (e.g. when classifier_type is not tuned) and
+                # let the sampled branch override them
+                merged = {k: v for k, v in params.items() if k not in (cls_name, short)}
+                merged.update(deepcopy(params[branch_key]))
+                model["classifier_params"] = merged
                 params = model["classifier_params"]
         if isinstance(params, dict):
             self._flatten_nested_model(params)
