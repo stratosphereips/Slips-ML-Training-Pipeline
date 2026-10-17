@@ -65,14 +65,15 @@ class FeatureExtraction:
             "sbytes",
         ]
 
-        # proto mapping patterns -> numeric values
-        self._proto_mapping_patterns = [
-            (r"tcp", 0.0),
-            (r"udp", 1.0),
-            (r"icmp-ipv6", 3.0),
-            (r"icmp", 2.0),
-            (r"arp", 4.0),
-        ]
+        # proto -> numeric code; exact match with unknown -> 0.0, the same table SLIPS' ML
+        # modules use at inference (slips_files/common/abstracts/ml_module_base.py)
+        self._proto_mapping = {
+            "tcp": 0.0,
+            "udp": 1.0,
+            "icmp-ipv6": 3.0,
+            "icmp": 2.0,
+            "arp": 4.0,
+        }
 
         self.slips_column_order = [
             "dur",
@@ -231,14 +232,14 @@ class FeatureExtraction:
     def _process_features(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
 
-        # normalize proto string early
+        # normalize proto string early (missing -> "", so a "" entry in protocols_to_discard drops it)
         if "proto" in df.columns:
-            df["proto"] = df["proto"].astype(str).str.lower()
+            df["proto"] = df["proto"].fillna("").astype(str).str.strip().str.lower()
 
         # drop unwanted protocols
-        discard_set = {p.lower() for p in self.protocols_to_discard}
+        discard_set = {str(p).strip().lower() for p in self.protocols_to_discard}
         if "proto" in df.columns:
-            df = df[~df["proto"].fillna("").str.lower().isin(discard_set)]
+            df = df[~df["proto"].isin(discard_set)]
 
         if df.empty:
             return df
@@ -273,14 +274,8 @@ class FeatureExtraction:
 
         # proto mapping -> numeric codes
         if "proto" in df.columns:
-            proto_series = df["proto"].astype(str).fillna("")
-            mapped = pd.Series(index=proto_series.index, dtype="float64")
-            for patt, val in self._proto_mapping_patterns:
-                mask = proto_series.str.contains(
-                    patt, case=False, regex=True, na=False
-                )
-                mapped.loc[mask] = val
-            df["proto"] = pd.to_numeric(mapped, errors="coerce").fillna(0.0)
+            proto_series = df["proto"].astype(str).str.strip().str.lower()
+            df["proto"] = proto_series.map(self._proto_mapping).fillna(0.0).astype("float64")
 
         # numeric coercion for the defined numeric fields
         for c in self._numeric_cols:
