@@ -84,10 +84,22 @@ def compute_binary_metrics(counts: Dict[str, int]) -> Dict[str, float]:
     return _GLOBAL_CALCULATOR.binary_metrics(counts)
 
 
-def _compute_mcc(tp: int, fp: int, tn: int, fn: int) -> float:
-    numerator = tp * tn - fp * fn
+def _compute_multiclass_mcc(per_class: Dict[str, Dict[str, int]]) -> float:
+    """MCC (Gorodkin's R_K) from per-class one-vs-rest counts; equals sklearn's matthews_corrcoef.
+
+    Summing the one-vs-rest counts over classes and feeding them to the binary formula
+    does not give MCC (for two classes it collapses to 2 * accuracy - 1).
+    """
+    if not per_class:
+        return 0.0
+    first = next(iter(per_class.values()))
+    n = sum(int(first.get(k, 0)) for k in ("TP", "FP", "TN", "FN"))
+    correct = sum(int(c.get("TP", 0)) for c in per_class.values())
+    pred = [int(c.get("TP", 0)) + int(c.get("FP", 0)) for c in per_class.values()]
+    true = [int(c.get("TP", 0)) + int(c.get("FN", 0)) for c in per_class.values()]
+    numerator = correct * n - sum(p * t for p, t in zip(pred, true))
     denom = math.sqrt(
-        max(tp + fp, 0) * max(tp + fn, 0) * max(tn + fp, 0) * max(tn + fn, 0)
+        max(n * n - sum(p * p for p in pred), 0) * max(n * n - sum(t * t for t in true), 0)
     )
     return numerator / denom if denom > 0 else 0.0
 
@@ -96,7 +108,7 @@ def compute_multi_metrics(
     per_class: Dict[str, Dict[str, int]]
 ) -> Dict[str, float]:
     """Aggregate per-class confusion dictionaries into macro/micro metrics."""
-    tp_total = fp_total = tn_total = fn_total = 0
+    tp_total = fp_total = fn_total = 0
     precisions: List[float] = []
     recalls: List[float] = []
     f1s: List[float] = []
@@ -104,11 +116,9 @@ def compute_multi_metrics(
     for cls_counts in per_class.values():
         tp = int(cls_counts.get("TP", 0))
         fp = int(cls_counts.get("FP", 0))
-        tn = int(cls_counts.get("TN", 0))
         fn = int(cls_counts.get("FN", 0))
         tp_total += tp
         fp_total += fp
-        tn_total += tn
         fn_total += fn
 
         precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
@@ -122,8 +132,10 @@ def compute_multi_metrics(
         recalls.append(recall)
         f1s.append(f1)
 
-    total = tp_total + fp_total + tn_total + fn_total
-    accuracy = (tp_total + tn_total) / total if total > 0 else 0.0
+    # every flow is counted once per class; any class's counts sum to the number of flows
+    first = next(iter(per_class.values()), {})
+    n_flows = sum(int(first.get(k, 0)) for k in ("TP", "FP", "TN", "FN"))
+    accuracy = tp_total / n_flows if n_flows > 0 else 0.0
 
     micro_precision = (
         tp_total / (tp_total + fp_total) if (tp_total + fp_total) > 0 else 0.0
@@ -139,7 +151,7 @@ def compute_multi_metrics(
     macro_recall = float(np.mean(recalls)) if recalls else 0.0
     macro_f1 = float(np.mean(f1s)) if f1s else 0.0
 
-    mcc = _compute_mcc(tp_total, fp_total, tn_total, fn_total)
+    mcc = _compute_multiclass_mcc(per_class)
 
     return {
         "accuracy": accuracy,
