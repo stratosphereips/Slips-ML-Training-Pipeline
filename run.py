@@ -7,7 +7,6 @@ import yaml
 import json
 import argparse
 import subprocess
-from datetime import datetime
 
 REPO_ROOT = Path(__file__).resolve().parent
 DEFAULT_CONFIG_PATH = REPO_ROOT / "configs" / "default_config.yaml"
@@ -22,13 +21,6 @@ from pipeline import PipelineRunner  # imports src/pipeline.py as module 'pipeli
 
 from conf_reader import ConfigReader
 from optuna_optimizer import OptunaOptimizer
-
-
-def _log_optuna_message(log_dir: Path, message: str):
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / "optuna_trials.log"
-    with open(log_path, "a") as log_file:
-        log_file.write(f"[{datetime.now().isoformat(timespec='seconds')}] {message}\n")
 
 
 def _get_git_commit() -> str | None:
@@ -47,25 +39,10 @@ def _get_git_commit() -> str | None:
         return None
 
 
-def _has_tunable_params(search_space) -> bool:
-    def _spec_has_params(spec):
-        if not isinstance(spec, dict):
-            return False
-        if spec.get("choices"):
-            return True
-        if "type" in spec:
-            return True
-        return any(_spec_has_params(sub) for sub in spec.values() if isinstance(sub, dict))
-
-    if not isinstance(search_space, dict):
-        return False
-    return any(_spec_has_params(spec) for spec in search_space.values())
-
-
 def main(config_path: str = str(DEFAULT_CONFIG_PATH), optuna_mode: bool = False):
     """
     Initialize and run the pipeline using the specified config file.
-    Returns 0 on success, 1 on failure.
+    Returns 0 on success, 1 on pipeline failure, 2 on Optuna failure.
     """
 
     # Common setup: create unique experiment folder and update config
@@ -83,11 +60,7 @@ def main(config_path: str = str(DEFAULT_CONFIG_PATH), optuna_mode: bool = False)
             idx += 1
         unique_exp_dir = Path(exp_base_dir) / f"{exp_name}_{idx}"
     unique_exp_dir.mkdir(parents=True, exist_ok=True)
-    # Update config to use the resolved experiment dir
-    base_config["paths"]["experiment_dir_resolved"] = str(unique_exp_dir.resolve())
-
-    # Unify command paths: always generate from resolved experiment directory
-    # Overwrite experiment_name in config to unique experiment directory name
+    # Point the config at the resolved experiment dir and rename the experiment after it
     base_config["experiment_name"] = unique_exp_dir.name
     base_config["paths"]["experiment_dir_resolved"] = str(unique_exp_dir.resolve())
 
@@ -95,19 +68,6 @@ def main(config_path: str = str(DEFAULT_CONFIG_PATH), optuna_mode: bool = False)
 
     with open(unique_exp_dir / "config_effective.yaml", "w") as f:
         yaml.safe_dump(base_config, f)
-    with open(unique_exp_dir / "config_effective.json", "w") as f_json:
-        json.dump(base_config, f_json, indent=2)
-
-    if not optuna_mode:
-        runner = PipelineRunner(
-            str(unique_exp_dir / "config_effective.yaml"), optuna_mode=False, git_commit=git_commit
-        )
-        try:
-            success = runner.run()
-        except Exception as e:
-            print(f"[ERROR] Pipeline failed: {e}")
-            traceback.print_exc()
-            return 1
     with open(unique_exp_dir / "config_effective.json", "w") as f_json:
         json.dump(base_config, f_json, indent=2)
 
@@ -119,7 +79,7 @@ def main(config_path: str = str(DEFAULT_CONFIG_PATH), optuna_mode: bool = False)
         optuna_dir.mkdir(exist_ok=True)
         # Prepare search space and metric names
         search_space = optuna_cfg["hyperparameters"]
-        metric_raw = optuna_cfg.get("metric", ["f1", "malware_fpr"])
+        metric_raw = optuna_cfg.get("metric", ["f1", "fpr"])
         if isinstance(metric_raw, str):
             if metric_raw.startswith("(") and metric_raw.endswith(")"):
                 metric_names = [m.strip() for m in metric_raw[1:-1].split(",")]
@@ -128,7 +88,7 @@ def main(config_path: str = str(DEFAULT_CONFIG_PATH), optuna_mode: bool = False)
         elif isinstance(metric_raw, (list, tuple)):
             metric_names = list(metric_raw)
         else:
-            metric_names = ["f1", "malware_fpr"]
+            metric_names = ["f1", "fpr"]
         directions = optuna_cfg.get("directions", ["maximize", "minimize"])
         n_trials = optuna_cfg.get("n_trials", 20)
         n_jobs = optuna_cfg.get("n_jobs", 1)
@@ -154,10 +114,10 @@ def main(config_path: str = str(DEFAULT_CONFIG_PATH), optuna_mode: bool = False)
             return 2
         return 0
     else:
-        runner = PipelineRunner(
-            str(unique_exp_dir / "config_effective.yaml"), optuna_mode=False, git_commit=git_commit
-        )
         try:
+            runner = PipelineRunner(
+                str(unique_exp_dir / "config_effective.yaml"), optuna_mode=False, git_commit=git_commit
+            )
             success = runner.run()
         except Exception as e:
             print(f"[ERROR] Pipeline failed: {e}")
