@@ -1,11 +1,11 @@
 # Author: Jan Svoboda
-# functionality: ZeekDataset loader specialized for conn.log.labeled files with caching. Handles casting, label mapping, batching, and efficient indexing for large files.
+# functionality: ZeekDataset loader specialized for conn.log.labeled files with caching. Handles casting, label mapping, and efficient indexing for large files (batching is done by the mixers).
 # behavior:
-#   - Reads conn.log.labeled (or falls back to conn.log).
+#   - Reads the first existing file of labeled_filenames (default: conn.log.labeled, labeled-conn.log, conn.log).
 #   - Casts columns according to Zeek #types header.
 #   - Skips flows with BACKGROUND label.
 #   - Defaults unlabeled flows to BENIGN.
-#   - Stores index in cache/ directory for large files (>50k valid flows) and reloads automatically.
+#   - Stores the index in cache_dir for large files (> persist_cache_threshold valid flows, default 30000) and reloads automatically.
 
 from .commons import BENIGN, MALICIOUS, BACKGROUND, is_malicious_label
 from .conn_normalizer import ConnToSlipsConverter
@@ -40,7 +40,6 @@ class ZeekDataset:
     ):
         self.root = Path(root)
         self.seed = seed
-        self.rng = random.Random(seed)
         self.persist_cache_threshold = persist_cache_threshold
         self.file_encoding = file_encoding
         self.file_errors = file_errors
@@ -72,6 +71,11 @@ class ZeekDataset:
 
         self.find_labeled_logfile()
         self._index_file()
+        if not self.headers:
+            print(
+                f"[WARN] {self.current_file} has no '#fields' header (not a Zeek TSV log?); "
+                "its flows are loaded without any fields"
+            )
         # Always ensure DataFrame is loaded at init
         self.as_dataframe()
 
@@ -163,6 +167,8 @@ class ZeekDataset:
         ) as fh:
             idx = 0
             for line in fh:
+                if not line.strip():
+                    continue  # blank lines are not flows (skipped the same way in _iter_lines)
                 if line.startswith("#fields"):
                     headers = line.strip().split()[1:]
                 elif line.startswith("#types"):
@@ -195,8 +201,9 @@ class ZeekDataset:
                     valid_indices.append(idx)
                     labels.append(str(mapped))
                     idx += 1
-            # Shuffle valid_indices and labels together with fixed seed (if provided)
-            if self.seed is not None:
+            # Shuffle valid_indices and labels together with fixed seed (if provided).
+            # This only orders the index; as_dataframe() always yields rows in file order.
+            if self.seed is not None and valid_indices:
                 combined = list(zip(valid_indices, labels))
                 rng = random.Random(self.seed)
                 rng.shuffle(combined)
@@ -284,7 +291,7 @@ class ZeekDataset:
         ) as fh:
             idx = 0
             for line in fh:
-                if line.startswith("#"):
+                if not line.strip() or line.startswith("#"):
                     continue
                 if idx not in valid_set:
                     idx += 1
@@ -320,8 +327,6 @@ class ZeekDataset:
                 return float(value)
             except ValueError:
                 return value
-        if typ == "":
-            return float(value)
         return value
 
     # Batching and line access methods removed: batching is now handled by mixers only
