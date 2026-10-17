@@ -13,7 +13,7 @@ All contributions are welcomed, thank you for taking the time to contribute to t
 
 The following git branches permanent in the repository:
 
-- `main`: contains the stable version of the repository. All new features should be based on this branch.
+- `master`: contains the stable version of the repository. All new features should be based on this branch.
 
 ## Naming Git branches for Pull Requests
 
@@ -29,7 +29,7 @@ to follow when contributing:
 
 ## What branch should you base your contribution?
 
-As a general rule, base your contribution on the `main` branch.
+As a general rule, base your contribution on the `master` branch.
 
 ## Creating a pull request
 

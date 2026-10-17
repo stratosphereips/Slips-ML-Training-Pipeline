@@ -1,10 +1,12 @@
 exclude: |
-  ^experiments/|
-  ^\.cache/|
-  ^__pycache__/|
-  ^\.venv/|
-  ^\.mypy_cache/|
-  ^\.pytest_cache/
+  (?x)^(
+    experiments/|
+    \.cache/|
+    __pycache__/|
+    \.venv/|
+    \.mypy_cache/|
+    \.pytest_cache/
+  )
 
 
 repos:
