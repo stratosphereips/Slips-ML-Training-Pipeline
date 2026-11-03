@@ -63,13 +63,14 @@ features:
   default_label: Benign
   # the module trains on every conn flow (no protocol filter)
   protocols_to_discard: []
-  # The module's exact 18 features. Optionally zero the two IP numbers (the
-  # input stays 18 wide): in these captures the benign flows all come from
-  # one local host and the malicious ones from outside addresses, so the IP
-  # numbers alone nearly separate the classes (held-out MCC ~0.99 for almost
-  # any setting). In the lab they carry almost nothing (one /24, scaled to
-  # ~0), so zeroing them is closer to what the module sees.
-  # columns_to_discard: ["saddr_num", "daddr_num"]
+  # The two IP numbers are zeroed (the input stays 18 wide), to match what
+  # the module sees: in the lab every host is in one /24, so after scaling
+  # the IP numbers carry almost nothing. In these captures the benign flows
+  # all come from one local host and the malicious ones from outside
+  # addresses, so the IP numbers alone would nearly separate the classes
+  # (held-out MCC ~0.99 for almost any setting). Remove the line to keep
+  # the module's raw 18 features.
+  columns_to_discard: ["saddr_num", "daddr_num"]
 
 preprocessing:
   steps:

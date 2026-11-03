@@ -29,7 +29,10 @@ python3 run.py configs/fl_rlh_optuna.yaml --optuna
   extraction, on the flow dict SLIPS stores for each Zeek record (`src/fl_rlh/data.py`).
   Checked identical to the raw-Zeek path for all flows of the eight captures and to the
   features of the flows SLIPS itself stored (dataset 011). `columns_to_discard` zeroes a
-  feature (the input stays 18 wide); the config shows how to zero the two IP numbers.
+  feature (the input stays 18 wide). The config zeroes the two IP numbers: in the lab
+  every host is in one /24, so after scaling they carry almost nothing for the module,
+  while in these captures they alone would nearly separate the classes (benign = one
+  local host, malicious = outside addresses).
 - **Training** = the module's window: the StandardScaler step is `partial_fit` on the whole
   batch, the batch is scaled, then `FLRLHClassifier` (`src/fl_rlh/classifier.py`)
   undersamples it 50/50 and trains `epochs_per_batch` epochs of the module's manual Adam on

@@ -201,6 +201,7 @@ def test_the_optuna_config_samples_buildable_classifiers(tmp_path):
 
     cfg = yaml.safe_load((Path(__file__).resolve().parents[1] / "configs" / "fl_rlh_optuna.yaml").read_text())
     assert cfg["features"]["feature_set"] == "fl_rlh" and cfg["validation_split"] == 0.0
+    assert cfg["features"]["columns_to_discard"] == ["saddr_num", "daddr_num"]
     train, objective, outside = cfg["commands"]
     assert train["command"] == "train" and objective["command"] == outside["command"] == "test"
     # the objective = the held-out rows of the training captures, never trained on
