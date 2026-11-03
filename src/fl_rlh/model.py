@@ -104,6 +104,32 @@ def build_model(seed: int = SEED) -> SimpleFederatedNet:
     return build_with_init_seed(shared_init_seed(seed), lambda: SimpleFederatedNet(seed))
 
 
+class ExtraLayerNet(SimpleFederatedNet):
+    """RLH with one more trainable layer between fc1 and the head (not in the
+    module): projection -> fc1(256->hidden2)+ReLU -> extra(hidden2->extra)+ReLU
+    -> head(extra->2)."""
+
+    def __init__(self, seed: int = SEED, hidden2: int = HIDDEN2, extra: int = 16):
+        super().__init__(seed, hidden2=hidden2)
+        self.extra = nn.Linear(hidden2, extra)
+        self.head = nn.Linear(extra, 2)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.random_projection(x) / self.projection_scale
+        x = self.relu(self.fc1(x))
+        x = self.relu(self.extra(x))
+        return self.head(x)
+
+
+def build_net(seed: int = SEED, hidden2: int = HIDDEN2, extra: int = 0) -> SimpleFederatedNet:
+    """A fresh net at the shared init seed: fc1 width `hidden2` and, with
+    extra > 0, one more ReLU layer of that width. The defaults (16, 0) are
+    exactly the module's model (build_model)."""
+    if extra > 0:
+        return build_with_init_seed(shared_init_seed(seed), lambda: ExtraLayerNet(seed, hidden2, extra))
+    return build_with_init_seed(shared_init_seed(seed), lambda: SimpleFederatedNet(seed, hidden2=hidden2))
+
+
 # ---- optimizer -------------------------------------------------------------- #
 def new_adam_state(model: nn.Module) -> dict:
     return {
@@ -112,9 +138,18 @@ def new_adam_state(model: nn.Module) -> dict:
     }
 
 
-def adam_step(model: nn.Module, state: dict, lr: float, wd: float = WEIGHT_DECAY):
+def adam_step(
+    model: nn.Module,
+    state: dict,
+    lr: float,
+    wd: float = WEIGHT_DECAY,
+    beta1: float = BETA1,
+    beta2: float = BETA2,
+    eps: float = EPS,
+):
     """One update of the module's manual Adam: decoupled weight decay, then
-    bias-corrected Adam. Frozen parameters (no grad) are skipped."""
+    bias-corrected Adam. Frozen parameters (no grad) are skipped. The
+    defaults are the module's constants."""
     with torch.no_grad():
         for name, param in model.named_parameters():
             if param.grad is None or not param.requires_grad:
@@ -124,11 +159,11 @@ def adam_step(model: nn.Module, state: dict, lr: float, wd: float = WEIGHT_DECAY
             g = param.grad.clone()
             param.mul_(1.0 - lr * wd)
             m, v = st["m"], st["v"]
-            m.mul_(BETA1).add_(g, alpha=1.0 - BETA1)
-            v.mul_(BETA2).addcmul_(g, g, value=1.0 - BETA2)
-            m_hat = m / (1.0 - BETA1 ** st["step"])
-            v_hat = v / (1.0 - BETA2 ** st["step"])
-            param.addcdiv_(m_hat, v_hat.sqrt().add_(EPS), value=-lr)
+            m.mul_(beta1).add_(g, alpha=1.0 - beta1)
+            v.mul_(beta2).addcmul_(g, g, value=1.0 - beta2)
+            m_hat = m / (1.0 - beta1 ** st["step"])
+            v_hat = v / (1.0 - beta2 ** st["step"])
+            param.addcdiv_(m_hat, v_hat.sqrt().add_(eps), value=-lr)
             param.grad.zero_()
 
 

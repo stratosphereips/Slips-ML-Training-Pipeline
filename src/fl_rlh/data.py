@@ -1,23 +1,22 @@
 # Author: Jan Svoboda
-# functionality: Labelled Zeek conn logs -> the SLIPS federated module's 18 features,
-# plus the fixed test split, CV folds and the module's 50/50 undersampling.
+# functionality: Zeek conn records -> the flow dicts SLIPS stores (input to the federated
+# module's 18-feature extraction), and the module's 50/50 undersampling.
 # behavior:
-#   - Datasets are read with the pipeline's ZeekDataset (label mapping, Background skipped).
 #   - Each Zeek record becomes the flow dict SLIPS's Zeek profiler would store
-#     (slips_files/core/input_profilers/zeek.py, flows/zeek.py Conn): '-' -> "",
+#     (slips_files/core/input_profilers/zeek.py, flows/zeek.py Conn): '-' / unset -> "",
 #     dur float, bytes/pkts/ports int, raw conn_state, dir_ "->". The pipeline's
-#     ConnToSlipsConverter is NOT used: it turns state into 0/1 and leaves dir_ empty,
-#     which would change two of the module's features.
+#     ConnToSlipsConverter is NOT used for these features: it turns state into 0/1 and
+#     leaves dir_ empty, which would change two of the module's features.
+#   - The pipeline's ZeekDataset hands mixers records already normalized by
+#     ConnToSlipsConverter (SLIPS key names, state as 0/1, dir_ empty): slips_flow()
+#     accepts both forms. The converter's 0/1 state comes from the same rule the module
+#     applies to the raw conn_state (SLIPS's _infer_state), so it is passed on as a state
+#     string that rule maps to the same value; dir_ becomes "->" as SLIPS stores it.
+#   - Used by FeatureExtraction(feature_set="fl_rlh") and FLRLHClassifier.
 
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Tuple
 
 import numpy as np
-from sklearn.model_selection import StratifiedKFold, train_test_split
-
-from ..commons import MALICIOUS
-from ..dataset_wrapper import ZeekDataset
-from .model import extract_flow_features
 
 # Zeek conn field -> SLIPS flow key (slips_files/core/input_profilers/zeek_to_slips_maps.py)
 CONN_TO_SLIPS = {
@@ -45,7 +44,8 @@ def zeek_to_slips_flow(record: Dict) -> Dict:
     flow = {}
     for zeek_field, slips_field in CONN_TO_SLIPS.items():
         val = record.get(zeek_field, "")
-        flow[slips_field] = "" if val is None or val == "-" else val
+        unset = val is None or val == "-" or (isinstance(val, float) and val != val)
+        flow[slips_field] = "" if unset else val
     flow["dur"] = float(flow.get("dur", 0) or 0)
     for f in _INT_FIELDS:
         flow[f] = int(float(flow.get(f, 0) or 0))
@@ -56,71 +56,38 @@ def zeek_to_slips_flow(record: Dict) -> Dict:
     return flow
 
 
-def resolve_dataset_dirs(root: str, ids: List[str], data_subdir: str = "data") -> Dict[str, Path]:
-    root_path = Path(root).expanduser().resolve()
-    out = {}
-    for ds_id in ids:
-        hits = sorted(p for p in root_path.iterdir() if p.name.startswith(str(ds_id)))
-        if not hits or not (hits[0] / data_subdir).is_dir():
-            raise FileNotFoundError(f"dataset {ds_id} not found under {root_path}")
-        out[str(ds_id)] = hits[0] / data_subdir
-    return out
+_SLIPS_KEYS = ("starttime", "uid", "saddr", "sport", "daddr", "dport", "proto",
+               "appproto", "dur", "sbytes", "dbytes", "history", "spkts", "dpkts")
 
 
-def load_features(
-    root: str,
-    ids: List[str],
-    cache_dir: Optional[str] = None,
-    max_flows_per_dataset: Optional[int] = None,
-    seed: int = 1111,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
-    """X (n x 18, float64), y (1 = malicious), source dataset id per row, summary."""
-    X, y, src, summary = [], [], [], {}
-    for ds_id, path in resolve_dataset_dirs(root, ids).items():
-        ds = ZeekDataset(path, batch_size=1, cache_dir=cache_dir)
-        rows, labels = [], []
-        for rec in ds._iter_lines():
-            feats = extract_flow_features(zeek_to_slips_flow(rec))
-            if feats is None:
-                continue
-            rows.append(feats)
-            labels.append(1 if rec["label"] == MALICIOUS else 0)
-        rows, labels = np.array(rows, dtype=np.float64), np.array(labels, dtype=np.int64)
-        if max_flows_per_dataset and len(labels) > max_flows_per_dataset:
-            keep, _ = train_test_split(
-                np.arange(len(labels)),
-                train_size=max_flows_per_dataset,
-                stratify=labels,
-                random_state=seed,
-            )
-            keep = np.sort(keep)
-            rows, labels = rows[keep], labels[keep]
-        summary[ds_id] = {
-            "path": str(path),
-            "flows": int(len(labels)),
-            "malicious": int(labels.sum()),
-            "benign": int((labels == 0).sum()),
-        }
-        X.append(rows)
-        y.append(labels)
-        src.append(np.full(len(labels), ds_id))
-    X, y, src = np.vstack(X), np.concatenate(y), np.concatenate(src)
-    summary["total"] = {"flows": int(len(y)), "malicious": int(y.sum()), "benign": int((y == 0).sum())}
-    return X, y, src, summary
+def _unset(val) -> bool:
+    return val is None or val == "-" or (isinstance(val, float) and val != val)
 
 
-def holdout_split(y: np.ndarray, test_size: float, seed: int) -> Tuple[np.ndarray, np.ndarray]:
-    """Fixed, seeded, stratified train/test indices."""
-    train_idx, test_idx = train_test_split(
-        np.arange(len(y)), test_size=test_size, stratify=y, random_state=seed
-    )
-    return np.sort(train_idx), np.sort(test_idx)
+def normalized_to_slips_flow(record: Dict) -> Dict:
+    """One ConnToSlipsConverter record (what the pipeline's mixers yield) -> the
+    SLIPS conn flow dict, as zeek_to_slips_flow would give for its raw Zeek line."""
+    flow = {k: ("" if _unset(record.get(k, "")) else record.get(k, "")) for k in _SLIPS_KEYS}
+    flow["dur"] = float(flow["dur"] or 0)
+    for f in _INT_FIELDS:
+        flow[f] = int(float(flow[f] or 0))
+    if flow["proto"] == "unknown_transport":
+        flow["proto"] = ""
+    state = record.get("state", "")
+    if isinstance(state, (int, float)) and not isinstance(state, bool) and state == state:
+        # already the SLIPS rule's output: a state string the same rule maps back to it
+        state = "established" if float(state) == 1.0 else "not established"
+    flow["state"] = "" if _unset(state) else state
+    flow["type_"] = "conn"
+    flow["dir_"] = "->"
+    return flow
 
 
-def cv_folds(y_train: np.ndarray, k: int, seed: int) -> List[Tuple[np.ndarray, np.ndarray]]:
-    """Stratified k-fold (positions within the training split)."""
-    skf = StratifiedKFold(n_splits=k, shuffle=True, random_state=seed)
-    return list(skf.split(np.zeros(len(y_train)), y_train))
+def slips_flow(record: Dict) -> Dict:
+    """A raw Zeek conn record or a ConnToSlipsConverter record -> SLIPS conn flow."""
+    if "id.orig_h" in record or "conn_state" in record:
+        return zeek_to_slips_flow(record)
+    return normalized_to_slips_flow(record)
 
 
 def undersample(X: np.ndarray, y: np.ndarray, rng: np.random.Generator) -> Tuple[np.ndarray, np.ndarray]:

@@ -226,6 +226,7 @@ class ConfigReader:
             "protocols_to_discard": feats.get("protocols_to_discard"),
             "columns_to_discard": feats.get("columns_to_discard"),
             "column_types": feats.get("column_types"),
+            "feature_set": feats.get("feature_set") or "slips",
         }
 
     def get_preprocessing_steps(self) -> list:

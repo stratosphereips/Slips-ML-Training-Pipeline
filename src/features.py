@@ -21,11 +21,19 @@ class FeatureExtraction:
         protocols_to_discard: Optional[Iterable[str]] = None,
         columns_to_discard: Optional[Iterable[str]] = None,
         column_types: Optional[dict] = None,
+        feature_set: str = "slips",
     ):
         """
         Minimal FeatureExtraction that relies on ConnToSlipsConverter to
         normalize Zeek conn flows into canonical SLIPS fields.
+
+        feature_set "fl_rlh" instead gives the SLIPS federated module's 18
+        features (src/fl_rlh): each Zeek record becomes the flow dict SLIPS
+        stores and goes through the module's own extraction.
         """
+        if feature_set not in ("slips", "fl_rlh"):
+            raise ValueError(f"unknown feature_set {feature_set!r} (expected 'slips' or 'fl_rlh')")
+        self.feature_set = feature_set
         self.converter = ConnToSlipsConverter(default_label=default_label)
 
         self.protocols_to_discard = (
@@ -106,6 +114,8 @@ class FeatureExtraction:
         """
 
         try:
+            if self.feature_set == "fl_rlh":
+                return self._fl_rlh_batch(data)
 
             if isinstance(data, pd.DataFrame):
                 df = data.copy()
@@ -178,6 +188,36 @@ class FeatureExtraction:
             # look successful (the batch was just skipped).
             print("Error in FeatureExtraction.process_batch()")
             raise
+
+    def _fl_rlh_batch(self, data) -> Tuple[pd.DataFrame, pd.Series]:
+        """(X, y) with the federated module's 18 features, in its order."""
+        from .fl_rlh.data import slips_flow
+        from .fl_rlh.model import FEATURE_ORDER, extract_flow_features
+
+        if isinstance(data, pd.DataFrame):
+            df = data.copy()
+        else:
+            df = pd.DataFrame(list(data) if not isinstance(data, dict) else [data])
+        if not df.empty and "proto" in df.columns and self.protocols_to_discard:
+            proto = df["proto"].fillna("").astype(str)
+            df = df[~proto.isin(self.protocols_to_discard)]
+        rows, keep = [], []
+        for i, rec in enumerate(df.to_dict(orient="records")):
+            feats = extract_flow_features(slips_flow(rec))
+            if feats is not None:
+                rows.append(feats)
+                keep.append(i)
+        if not rows:
+            return pd.DataFrame([], columns=FEATURE_ORDER), pd.Series([], dtype="object")
+        df = df.iloc[keep].reset_index(drop=True)
+        y = self._extract_labels(df).reset_index(drop=True)
+        X = pd.DataFrame(rows, columns=FEATURE_ORDER)
+        # the model's input stays 18 wide (fixed shared projection): columns_to_discard
+        # zeroes a feature instead of dropping it, so it carries no information
+        for col in self.columns_to_discard:
+            if col in X.columns:
+                X[col] = 0.0
+        return X, y
 
     def process_item(self, flow_dict: dict) -> Optional[Tuple[dict, object]]:
         """

@@ -1,0 +1,213 @@
+---
+# Optuna search over the learning parameters of the SLIPS federated module's
+# RLH model (src/fl_rlh: frozen shared projection 18->256, fc1 256->16, head
+# 16->2, the module's manual Adam, no warm start), with the pipeline's own
+# optimizer.
+#
+# Once, make the fixed data split (writes ./datasets_fl_rlh, gitignored):
+#   python3 -m src.fl_rlh.make_split --src ./datasets \
+#       --out ./datasets_fl_rlh --train 008 010 011 012 037 \
+#       --outside 014 016 027
+# Then:
+#   python3 run.py configs/fl_rlh_optuna.yaml --optuna
+#
+# Data, the same in every trial:
+#   train  the 90% parts of the mixed captures 008 010 011 012 037
+#          (stratified by label, seeded)
+#   test   test_within = the objective: their held-out 10%, never trained on;
+#          test_outside = captures of other networks, 014 (balanced),
+#          016 (mostly benign), 027 (mostly malicious), recorded per trial
+#          (command_metrics), not optimized: nothing trained on these five
+#          captures transfers to them.
+# The mixer only changes how the same training rows are batched (balanced
+# stops when one label runs out); there is no validation split, so nothing is
+# taken out of the training set.
+#
+# Each training batch is one "window" of the module: the StandardScaler step
+# is partial_fit on the whole batch, the batch is scaled, then
+# FLRLHClassifier undersamples it 50/50 and trains `epochs_per_batch` epochs
+# on it (one pass over the stream).
+
+experiment_name: fl_rlh_optuna
+root: ./datasets_fl_rlh
+seed: 1111
+validation_split: 0.0
+# one batch = one module window (the module's windows hold ~700-2400 flows)
+batch_size_train: 1000
+batch_size_test: 2000
+
+classes:
+  - "Benign"
+  - "Malicious"
+plotting_pths:
+  training: "./src/plot_utils/plot_train_perf.py"
+  testing: "./src/plot_utils/plot_test_perf.py"
+paths:
+  experiment_dir: ./experiments
+
+dataset_loader:
+  data_subdir: data
+  persist_cache_threshold: 20000
+  cache_dir: ./cache
+  labeled_filenames:
+    - conn.log.labeled
+    - labeled-conn.log
+    - conn.log
+  file_encoding: utf-8
+  file_errors: ignore
+  shuffle_per_epoch: false
+
+features:
+  # the federated module's 18 features (not the pipeline's 11 SLIPS ones)
+  feature_set: fl_rlh
+  default_label: Benign
+  # the module trains on every conn flow (no protocol filter)
+  protocols_to_discard: []
+  # The module's exact 18 features. Optionally zero the two IP numbers (the
+  # input stays 18 wide): in these captures the benign flows all come from
+  # one local host and the malicious ones from outside addresses, so the IP
+  # numbers alone nearly separate the classes (held-out MCC ~0.99 for almost
+  # any setting). In the lab they carry almost nothing (one /24, scaled to
+  # ~0), so zeroing them is closer to what the module sees.
+  # columns_to_discard: ["saddr_num", "daddr_num"]
+
+preprocessing:
+  steps:
+    - name: "scaler"
+      type: "StandardScaler"
+      params: {}
+  save_steps: true
+  step_filename_template: "{name}.bin"
+
+model:
+  wrapper: SKLearnClassifierWrapper
+  classifier_type: src.fl_rlh.classifier.FLRLHClassifier
+  # the module's current settings; Optuna overrides the tuned ones below
+  classifier_params:
+    lr: 0.03
+    epochs_per_batch: 15
+    minibatch_size: 0
+    scheduler: none
+    cycle_batches: 4
+    min_lr_factor: 0.01
+    beta1: 0.9
+    beta2: 0.999
+    eps: 1.0e-8
+    weight_decay: 1.0e-4
+    hidden2: 16
+    extra_layer: 0
+    undersample_batches: true
+    seed: 1111
+    torch_threads: 1
+
+commands:
+  - name: "train_main"
+    command: "train"
+    mixer:
+      type: "sequence"
+      datasets:
+        - "008-train"
+        - "010-train"
+        - "011-train"
+        - "012-train"
+        - "037-train"
+
+  # first test command = the Optuna objective
+  - name: "test_within"
+    command: "test"
+    mixer:
+      type: "sequence"
+      datasets:
+        - "008-test"
+        - "010-test"
+        - "011-test"
+        - "012-test"
+        - "037-test"
+
+  - name: "test_outside"
+    command: "test"
+    mixer:
+      type: "sequence"
+      datasets: ["014", "016", "027"]
+
+optuna:
+  enabled: true
+  # parallel trials (threads); each trial's torch uses torch_threads threads
+  n_jobs: 4
+  n_trials: 1000
+  metric:
+    - "f1"
+    - "fpr"
+  directions:
+    - "maximize"
+    - "minimize"
+  hyperparameters:
+    commands:
+      - name: "train_main"
+        command: "train"
+        mixer:
+          type:
+            type: categorical
+            choices: ["sequence", "random", "balanced"]
+          balance:
+            type: categorical
+            choices:
+              - [0.5, 0.5]
+              - [0.25, 0.75]
+              - [0.75, 0.25]
+            when:
+              commands[0].mixer.type:
+                - "balanced"
+    model:
+      classifier_params:
+        FLRLHClassifier:
+          lr:
+            type: float
+            low: 1.0e-5
+            high: 1.0
+            log: true
+          epochs_per_batch:
+            type: int
+            low: 1
+            high: 300
+            log: true
+          minibatch_size:
+            type: categorical
+            choices: [0, 32, 100, 256]
+          scheduler:
+            type: categorical
+            choices: ["none", "cosine", "cyclic", "onecycle"]
+          cycle_batches:
+            type: int
+            low: 2
+            high: 20
+          min_lr_factor:
+            type: float
+            low: 0.001
+            high: 0.5
+            log: true
+          beta1:
+            type: float
+            low: 0.5
+            high: 0.99
+          beta2:
+            type: float
+            low: 0.9
+            high: 0.9999
+            log: true
+          eps:
+            type: float
+            low: 1.0e-10
+            high: 1.0e-4
+            log: true
+          weight_decay:
+            type: float
+            low: 1.0e-7
+            high: 1.0e-1
+            log: true
+          hidden2:
+            type: categorical
+            choices: [4, 8, 16, 32, 64, 128]
+          extra_layer:
+            type: categorical
+            choices: [0, 8, 16, 32, 64]
