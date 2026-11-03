@@ -110,7 +110,7 @@ def _run(job_fold):
     Xtr, ytr, Xev, _ = prepare(
         Xtr_raw, ytr_raw, Xev_raw,
         undersample_train=bool(pre.get("undersample", True)),
-        scaler_fit_on=pre.get("scaler_fit_on", "train_undersampled"),
+        scaler_fit_on=pre.get("scaler_fit_on", "train_all"),
         rng=rng,
     )
     t0 = time.time()

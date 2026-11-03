@@ -23,12 +23,13 @@ test_size: 0.1
 # stratified k-fold on the other 90%
 cv_folds: 5
 
-# as in the module with balancing=undersample: 50/50 undersampled training
-# rows, StandardScaler fit on them, unweighted cross-entropy
+# as in the module with balancing=undersample (SLIPS dc15aad7d): StandardScaler
+# fit on all training rows (the module: the whole window) before 50/50
+# undersampling, unweighted cross-entropy
 preprocessing:
   undersample: true
-  # train_undersampled, or train_all (all training rows)
-  scaler_fit_on: train_undersampled
+  # train_all (the module now) or train_undersampled (before dc15aad7d)
+  scaler_fit_on: train_all
   # the module's per-batch class weights (off with undersampling)
   class_weighting: false
 

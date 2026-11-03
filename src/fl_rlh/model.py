@@ -2,7 +2,7 @@
 # functionality: The SLIPS federated module's default model (random_projection_mlp,
 # "RLH") and its 18-feature extraction, copied so it can be trained offline.
 # behavior:
-#   - Copied from StratosphereLinuxIPS, branch fl_module_jan_rebased @ a0b69abc6:
+#   - Copied from StratosphereLinuxIPS, branch fl_module_jan_rebased @ dc15aad7d:
 #     modules/federated_network_module/federated_network_module.py
 #     (shared_random_projection, shared_init_seed, build_with_init_seed,
 #     SimpleFederatedNet, minibatch_indices, minibatch_rng, _get_feature_order,

@@ -99,6 +99,22 @@ def test_undersample_keeps_the_smaller_class_and_balances():
     assert set(map(tuple, X[y == 0])) <= set(map(tuple, Xu))
 
 
+def test_scaler_is_fit_on_all_training_rows_before_undersampling():
+    """The module since dc15aad7d: the scaler learns the whole window, the
+    training batch is the undersampled part of it, scaled with that fit."""
+    rng = np.random.default_rng(0)
+    Xtr, ytr = rng.normal(size=(40, 18)), np.array([1] * 30 + [0] * 10)
+    Xev = rng.normal(loc=50.0, size=(10, 18))
+    tr_scaled, yu, ev_scaled, scaler = prepare(
+        Xtr, ytr, Xev, undersample_train=True, scaler_fit_on="train_all",
+        rng=np.random.default_rng(1))
+    Xu, yu_want = undersample(Xtr, ytr, np.random.default_rng(1))
+    assert np.allclose(scaler.mean_, Xtr.mean(axis=0))
+    assert np.array_equal(yu, yu_want) and len(yu) == 20
+    assert np.allclose(tr_scaled, scaler.transform(Xu).astype(np.float32))
+    assert np.allclose(ev_scaled, scaler.transform(Xev).astype(np.float32))
+
+
 def test_scaler_is_fit_on_the_training_rows_only():
     rng = np.random.default_rng(0)
     Xtr, ytr = rng.normal(size=(40, 18)), np.array([1] * 30 + [0] * 10)

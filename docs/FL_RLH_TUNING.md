@@ -7,13 +7,16 @@ learning-rate schedule and mini-batching behave, without SLIPS, peers or federat
 
 - **Same model and data path as the module.** The projection, shared init, 18
   features and manual Adam are copied from StratosphereLinuxIPS
-  `fl_module_jan_rebased` @ a0b69abc6 (`src/fl_rlh/model.py`).
+  `fl_module_jan_rebased` @ dc15aad7d (`src/fl_rlh/model.py`).
   `testing/test_fl_rlh.py` checks them bit-for-bit against
   `src/fl_rlh/fl_rlh_reference.npz`, exported from the SLIPS image by
   `src/fl_rlh/make_reference.py`. Zeek records become the flow dicts SLIPS stores
   (checked on a SLIPS run: 3106 of 3106 conn flows identical).
-- **Preprocessing as with `balancing: undersample`:** 50/50 undersampled training
-  rows, a StandardScaler fit on them, unweighted cross-entropy.
+- **Preprocessing as with `balancing: undersample` (SLIPS dc15aad7d):** a
+  StandardScaler fit on all training rows (the module: the whole window) before
+  50/50 undersampling, the undersampled rows scaled with it, unweighted
+  cross-entropy. `scaler_fit_on: train_undersampled` gives the module's earlier
+  behaviour (fit on the undersampled rows).
 - **No warm start:** every run starts from the module's shared init.
 - **Protocol:** a fixed, seeded, stratified 10% hold-out; stratified 5-fold CV on
   the other 90% over the grid in `configs/fl_rlh_tuning.yaml` (lr × schedule
@@ -49,6 +52,9 @@ skipped. `--stage cv|final` runs one stage, `--smoke` runs a tiny grid (2 folds,
 ## Caveats
 
 - Zeek conn logs have no ARP records, so ARP (≈85% of the lab traffic) is absent here.
+- The module's scaler is refit (`partial_fit`) on every window, accumulating
+  over the run. Here it is fit once on the whole training split (each CV fold's
+  training rows, or all 90% for the final runs), as if every window had been seen.
 - `saddr_num` / `daddr_num` (IP % 1,000,000) are features, as in the module. In a
   capture of one attacked host they can help the model recognise addresses.
 - Offline training sees all of the training data from the start. In the module,

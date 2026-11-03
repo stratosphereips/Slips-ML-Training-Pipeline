@@ -111,7 +111,7 @@ def main():
                                 capture_output=True, text=True).stdout.strip()
     except OSError:
         commit = ""
-    commit = commit or "a0b69abc6"
+    commit = commit or "dc15aad7d"
     np.savez_compressed(
         OUT,
         projection=artifact.numpy(),

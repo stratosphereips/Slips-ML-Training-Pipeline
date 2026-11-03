@@ -2,8 +2,9 @@
 # functionality: Train one RLH configuration from the shared init and record its
 # convergence (loss + confusion counts at checkpoint steps).
 # behavior:
-#   - Preprocessing as in the SLIPS federated module: undersample the training
-#     rows to 50/50, fit a StandardScaler on them, scale train and eval rows with it.
+#   - Preprocessing as in the SLIPS federated module (since dc15aad7d): fit a
+#     StandardScaler on all training rows (the module: the whole window, before
+#     undersampling), undersample them to 50/50, scale train and eval rows with it.
 #   - Optimizer = the module's manual Adam; the learning rate follows a schedule
 #     (none / cosine / cyclic triangular / one-cycle) over the step budget.
 #   - Full batch = one step per epoch (as in the module); with a batch size each
@@ -68,10 +69,17 @@ def scores(tp: int, fp: int, tn: int, fn: int) -> Dict[str, float]:
 
 
 def prepare(X_train, y_train, X_eval, *, undersample_train: bool, scaler_fit_on: str, rng):
-    """Undersample (optional) and scale like the module; returns float32 arrays."""
+    """Scale and undersample like the module; returns float32 arrays.
+
+    scaler_fit_on="train_all" fits the scaler on all training rows before
+    undersampling (the module since dc15aad7d); "train_undersampled" fits it
+    on the undersampled rows (the module before)."""
+    if scaler_fit_on not in ("train_all", "train_undersampled"):
+        raise ValueError(f"unknown scaler_fit_on {scaler_fit_on!r}")
+    scaler = StandardScaler().fit(X_train) if scaler_fit_on == "train_all" else None
     Xu, yu = undersample(X_train, y_train, rng) if undersample_train else (X_train, y_train)
-    fit_rows = Xu if scaler_fit_on == "train_undersampled" else X_train
-    scaler = StandardScaler().fit(fit_rows)
+    if scaler is None:
+        scaler = StandardScaler().fit(Xu)
     return (
         scaler.transform(Xu).astype(np.float32),
         yu,
